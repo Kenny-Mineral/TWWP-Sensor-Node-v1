@@ -242,3 +242,14 @@ All topics: port 8883 TLS only.
 | Loop stall | Hardware watchdog reboots after 30s. Reason written to `/log/crashes.txt`. |
 | TLS failure | Log SSL error code. Retry with backoff. Never fall back to plain MQTT. |
 | Bad OTA | If boot crashes within 60s → rollback via `esp_ota_set_boot_partition`. |
+
+---
+
+## ESPHome (prototyping only — not production)
+
+ESPHome is useful for:
+- Quickly validating new sensor wiring before writing C++ drivers
+- Confirming Modbus register addresses on the YiErYi 3788 (M5) before implementing in PlatformIO
+- Testing DS18B20 1-Wire addresses at boot
+
+ESPHome is not used for production firmware — it lacks offline buffering, custom MQTT retry logic, and the FreeRTOS task structure this project requires.
