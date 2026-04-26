@@ -138,10 +138,10 @@ Nothing to wire — already on GPIO48.
 ...
 [WiFi] connected, IP=..., RSSI=...
 [RTC] NTP epoch = ...
-[MQTT] connecting to mqtt.twwp.nz:8883 (TLS) as twwp_wh_001 ...
-[MQTT] TLS handshake OK
+[MQTT] attempting connect to twwp-iot.duckdns.org:8883
 [MQTT] connected
-[MQTT] HA discovery: homeassistant/binary_sensor/.../leak/config
+[MQTT] HA discovery published
+[M0] status {"node_id":"wh_001",...,"leak":false,"leak_state":"DRY",...}
 [LEAK] initial state: DRY
 [WDT] armed, timeout=30s
 [TWWP] ready

@@ -2,16 +2,16 @@
 _Update before switching tools. Commit immediately after._
 
 ## Last done
-ESPHome working — created minimal ESPHome leak-sensor config, flashed to board, confirmed leak sensor fires in Home Assistant via MQTT. Original PlatformIO firmware flash is next.
+M0 complete — PlatformIO firmware flashed and confirmed working. WiFi connects, MQTT TLS connects to twwp-iot.duckdns.org:8883, HA discovery published, leak sensor fires WET/DRY in HA under TWWP-WH-001 device. Telemetry publishing every 10s.
 
 ## In progress
-docs/WIRING_M0.md, include/pins.h, include/secrets.h.sample, platformio.ini, src/main.cpp, src/net_mqtt.cpp, src/net_mqtt.h, src/net_wifi.cpp, src/sensor_leak.cpp, src/status_led.cpp, src/store_sd.cpp, src/time_rtc.cpp, src/watchdog.cpp (uncommitted modifications)
+Nothing — M0 committed and clean.
 
 ## Next step
-Flash original PlatformIO firmware: hold BOOT, tap RESET, release BOOT, then run `pio run -t upload` from the firmware project dir. Monitor with `pio device monitor` and verify leak sensor fires in HA under WH-001 device.
+Start M1: wire and bring up DS3231 RTC + SD card logger. DS3231 on GPIO9(SDA)/GPIO3(SCL) addr 0x68. Implement time_rtc.cpp (NTP sync + drift correction) and store_sd.cpp (daily CSV log + offline MQTT buffer). Verify `ts` field in telemetry is non-zero and CSV appears on SD card.
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-04-27 09:00
+2026-04-27 14:00

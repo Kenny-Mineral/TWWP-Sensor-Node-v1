@@ -15,6 +15,7 @@ static PubSubClient mqttClient(secureClient);
 static unsigned long mqtt_lastAttempt = 0;
 static unsigned long mqtt_backoffMs = 1000; // start 1s
 static const unsigned long mqtt_backoffMaxMs = 60000; // max 60s
+static bool mqtt_justConnected = false;
 
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Log received command to Serial and SD
@@ -42,6 +43,9 @@ bool netMqtt_begin() {
     // Configure PubSubClient server
     mqttClient.setServer(MQTT_HOST, MQTT_PORT);
     mqttClient.setCallback(mqttCallback);
+    mqttClient.setKeepAlive(15);
+    mqttClient.setSocketTimeout(5);
+    mqttClient.setBufferSize(1024);
 
     // Try a short connect window (non-blocking >10s). Keep this under watchdog rules.
     statusLed_setState(LedState::MQTT_CONNECTING);
@@ -53,6 +57,7 @@ bool netMqtt_begin() {
         watchdog_feed();
         if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, TOPIC_LWT, 1, true, "offline")) {
             connected = true;
+            mqtt_justConnected = true;
             break;
         }
         delay(200);
@@ -81,7 +86,10 @@ bool netMqtt_begin() {
 
 void netMqtt_loop() {
     if (mqttClient.connected()) {
-        mqttClient.loop();
+        if (!mqttClient.loop()) {
+            Serial.println("[MQTT] connection lost during loop, reconnecting");
+            mqttClient.disconnect();
+        }
         return;
     }
 
@@ -100,6 +108,7 @@ void netMqtt_loop() {
     bool ok = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, TOPIC_LWT, 1, true, "offline");
     if (ok) {
         Serial.println("[MQTT] connected");
+        mqtt_justConnected = true;
         mqttClient.subscribe(TOPIC_CMD);
         statusLed_setState(LedState::ONLINE);
         // Drain buffered messages
@@ -126,6 +135,12 @@ bool netMqtt_isConnected() {
     return mqttClient.connected();
 }
 
+bool netMqtt_takeJustConnected() {
+    bool justConnected = mqtt_justConnected;
+    mqtt_justConnected = false;
+    return justConnected;
+}
+
 bool netMqtt_publish(const char* topic, const char* payload, bool retain) {
     if (!mqttClient.connected()) return false;
     bool ok = mqttClient.publish(topic, payload, retain);
@@ -147,4 +162,3 @@ void netMqtt_publishSub(const char* topic, const char* payload) {
         storeSd_bufferMessage(topic, payload);
     }
 }
-

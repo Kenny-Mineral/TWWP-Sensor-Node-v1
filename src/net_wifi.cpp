@@ -10,7 +10,6 @@
 static WiFiManager wifiManager;
 
 static String makeApName() {
-    // Use lower 24 bits of efuse MAC as a short chip id
     uint64_t mac = ESP.getEfuseMac();
     uint32_t id = (uint32_t)(mac & 0xFFFFFF);
     char buf[16];
@@ -21,19 +20,39 @@ static String makeApName() {
 bool netWifi_begin() {
     Serial.println("[WiFi] init");
 
-    // Hostname: twwp-<NODE_ID>
     String hostname = String("twwp-") + String(NODE_ID);
     WiFi.setHostname(hostname.c_str());
 
-    // Use WiFiManager to autoconnect or start captive portal
-    String apName = makeApName();
+    // Clean slate before autoConnect — avoids stale mode state on ESP32-S3
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_STA);
+    delay(200);
 
+    String apName = makeApName();
     statusLed_setState(LedState::WIFI_CONNECTING);
 
-    // Cap portal time so watchdog (30s) is never exceeded
-    wifiManager.setTimeout(25);
+    wifiManager.setConfigPortalTimeout(180);
+    wifiManager.setConnectTimeout(15);
+    wifiManager.setSaveConnectTimeout(10);
+    wifiManager.setWiFiAPChannel(1);
 
-    // Try autoConnect (will use saved creds if present, otherwise starts AP)
+    wifiManager.setAPCallback([](WiFiManager* wm) {
+        Serial.println();
+        Serial.println("========================================");
+        Serial.println("[WiFi] SETUP PORTAL OPEN");
+        Serial.print("[WiFi]   Connect to WiFi:  ");
+        Serial.println(wm->getConfigPortalSSID());
+        Serial.println("[WiFi]   Password:        wateriswet");
+        Serial.println("[WiFi]   Then open:       http://192.168.4.1");
+        Serial.println("[WiFi]   Portal closes in 180 seconds");
+        Serial.println("========================================");
+        Serial.println();
+    });
+
+    wifiManager.setSaveConfigCallback([]() {
+        Serial.println("[WiFi] credentials saved — connecting...");
+    });
+
     bool ok = wifiManager.autoConnect(apName.c_str(), "wateriswet");
 
     if (!ok) {
@@ -42,7 +61,6 @@ bool netWifi_begin() {
         return false;
     }
 
-    // Connected
     Serial.print("[WiFi] connected, IP=");
     Serial.println(WiFi.localIP().toString());
     statusLed_setState(LedState::ONLINE);
@@ -57,13 +75,12 @@ void netWifi_loop() {
     }
 
     unsigned long now = millis();
-    if (now - lastReconnect < 5000) return; // throttle attempts
+    if (now - lastReconnect < 5000) return;
     lastReconnect = now;
 
     Serial.println("[WiFi] lost connection, attempting reconnect");
     statusLed_setState(LedState::WIFI_CONNECTING);
 
-    // Non-blocking reconnect attempt; wait a short time while feeding watchdog
     WiFi.reconnect();
     unsigned long start = millis();
     while (millis() - start < 5000) {
@@ -87,12 +104,9 @@ bool netWifi_isConnected() {
 }
 
 void netWifi_resetCredentials() {
-    Serial.println("[WiFi] resetting stored credentials (WiFiManager NVS)");
-    // Clear saved WiFi settings stored by WiFiManager
+    Serial.println("[WiFi] clearing credentials and rebooting");
     wifiManager.resetSettings();
-    // Also attempt to clear saved WiFi on the stack
     WiFi.disconnect(true, true);
-    delay(200);
-    Serial.println("[WiFi] rebooting to apply reset");
+    delay(500);
     ESP.restart();
 }
