@@ -76,7 +76,7 @@ static void serviceSerialConsole() {
         Serial.println("[SERIAL] console connected");
         Serial.print("[SERIAL] leak state: ");
         Serial.println(leakStateText());
-        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>");
+        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
     }
 
     wasConnected = connected;
@@ -106,8 +106,14 @@ static void serviceSerialConsole() {
                     storeSd_printDirectory(cmd + 5, Serial);
                 } else if (strncmp(cmd, "sdcat ", 6) == 0) {
                     storeSd_printFile(cmd + 6, Serial);
+                } else if (strncmp(cmd, "sdrm ", 5) == 0) {
+                    storeSd_removePath(cmd + 5, Serial);
+                } else if (strcmp(cmd, "sdinfo") == 0) {
+                    storeSd_printInfo(Serial);
+                } else if (strcmp(cmd, "sdprune") == 0) {
+                    storeSd_pruneLogs(Serial);
                 } else if (strcmp(cmd, "help") == 0) {
-                    Serial.println("[SERIAL] commands: sdls [path], sdcat <path>");
+                    Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
                 } else {
                     Serial.print("[SERIAL] unknown command: ");
                     Serial.println(cmd);

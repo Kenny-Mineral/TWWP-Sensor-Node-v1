@@ -8,3 +8,6 @@ bool storeSd_bufferMessage(const char* topic, const char* payload); // Ring-buff
 bool storeSd_drainBuffer(uint8_t maxMessages = 10); // Drain buffered msgs to MQTT
 bool storeSd_printDirectory(const char* path, Print& out);
 bool storeSd_printFile(const char* path, Print& out);
+bool storeSd_removePath(const char* path, Print& out);
+bool storeSd_printInfo(Print& out);
+uint16_t storeSd_pruneLogs(Print& out);

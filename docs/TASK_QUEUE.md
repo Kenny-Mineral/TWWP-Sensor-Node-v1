@@ -23,6 +23,8 @@ Design rules, locked decisions, and standing rules are in `docs/FIRMWARE_ARCHITE
 - [x] Restore broker → files drain in order, HA shows historical transitions.
 
 ### M0.3 — Polish
+- [x] **SD serial maintenance.** `sdls`, `sdcat`, `sdrm`, `sdinfo`, and `sdprune` over USB serial.
+- [x] **SD retention config.** Optional `sd.retention_days`, `sd.auto_prune`, and `sd.serial_commands_enabled` loaded from `/config/node.json`.
 - [ ] **Buffer overflow cap.** `storeSd_bufferMessage()` has no cap. If `s_seq - oldestSeq > SD_MAX_BUFFER_LINES`, delete oldest before writing, append warning to `/log/crashes.txt`.
 - [ ] **SD-failure surfacing.** On write failure in `store_sd.cpp`, publish `"sd write failed"` to `twwp/<id>/log` via MQTT (rate-limited 1/min).
 - [ ] **Reset-creds gesture.** `digitalRead(0) == LOW` held > 5s in `loop()` → `netWifi_resetCredentials()`.

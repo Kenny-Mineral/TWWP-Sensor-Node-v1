@@ -17,6 +17,66 @@ static SPIClass sdSpi(HSPI);
 static SdFs sd;
 static bool sdReady = false;
 static uint32_t nextBufferSeq = 0;
+static uint16_t sdRetentionDays = 0;
+static bool sdAutoPrune = false;
+static bool sdSerialCommandsEnabled = true;
+
+static bool parseLogDateFromName(const char* name, int& year, int& month, int& day) {
+    if (strlen(name) != 14 || strcmp(name + 10, ".csv") != 0) {
+        return false;
+    }
+
+    if (name[4] != '-' || name[7] != '-') {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < 10; ++i) {
+        if (i == 4 || i == 7) {
+            continue;
+        }
+        if (name[i] < '0' || name[i] > '9') {
+            return false;
+        }
+    }
+
+    year = atoi(name);
+    month = atoi(name + 5);
+    day = atoi(name + 8);
+    return year >= 2024 && month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+static int32_t daysFromCivil(int year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(year - era * 400);
+    const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<int>(doe) - 719468;
+}
+
+static void loadSdConfig() {
+    sdRetentionDays = 0;
+    sdAutoPrune = false;
+    sdSerialCommandsEnabled = true;
+
+    FsFile file;
+    if (!file.open(SD_CONFIG_PATH, O_RDONLY)) {
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+    if (err) {
+        Serial.print("[SD] config read failed: ");
+        Serial.println(err.c_str());
+        return;
+    }
+
+    sdRetentionDays = doc["sd"]["retention_days"] | 0;
+    sdAutoPrune = doc["sd"]["auto_prune"] | false;
+    sdSerialCommandsEnabled = doc["sd"]["serial_commands_enabled"] | true;
+}
 
 static bool parseSeqFromName(const char* name, uint32_t& seqOut) {
     const char* dot = strrchr(name, '.');
@@ -139,8 +199,18 @@ bool storeSd_begin() {
         return false;
     }
 
+    if (!sd.exists("/config") && !sd.mkdir("/config")) {
+        Serial.println("[SD] failed to create config dir");
+    }
+
+    loadSdConfig();
     countBufferFilesAndMaxSeq();
     sdReady = true;
+
+    if (sdAutoPrune) {
+        storeSd_pruneLogs(Serial);
+    }
+
     return true;
 }
 
@@ -268,6 +338,10 @@ bool storeSd_printDirectory(const char* path, Print& out) {
         out.println("[SD] not mounted");
         return false;
     }
+    if (!sdSerialCommandsEnabled) {
+        out.println("[SD] serial commands disabled");
+        return false;
+    }
 
     FsFile dir;
     FsFile entry;
@@ -306,6 +380,10 @@ bool storeSd_printFile(const char* path, Print& out) {
         out.println("[SD] not mounted");
         return false;
     }
+    if (!sdSerialCommandsEnabled) {
+        out.println("[SD] serial commands disabled");
+        return false;
+    }
 
     FsFile file;
     if (!file.open(path, O_RDONLY) || file.isDir()) {
@@ -341,4 +419,115 @@ bool storeSd_printFile(const char* path, Print& out) {
     out.println(path);
     file.close();
     return true;
+}
+
+bool storeSd_removePath(const char* path, Print& out) {
+    if (!sdReady) {
+        out.println("[SD] not mounted");
+        return false;
+    }
+    if (!sdSerialCommandsEnabled) {
+        out.println("[SD] serial commands disabled");
+        return false;
+    }
+    if (strcmp(path, "/") == 0 || strcmp(path, SD_LOG_DIR) == 0 ||
+        strcmp(path, SD_BUF_DIR) == 0 || strcmp(path, "/config") == 0) {
+        out.print("[SD] refusing to remove protected path: ");
+        out.println(path);
+        return false;
+    }
+
+    FsFile file;
+    if (!file.open(path, O_RDONLY)) {
+        out.print("[SD] path not found: ");
+        out.println(path);
+        return false;
+    }
+    bool isDir = file.isDir();
+    file.close();
+
+    bool ok = isDir ? sd.rmdir(path) : sd.remove(path);
+    out.print(ok ? "[SD] removed " : "[SD] remove failed: ");
+    out.println(path);
+    return ok;
+}
+
+bool storeSd_printInfo(Print& out) {
+    if (!sdReady) {
+        out.println("[SD] not mounted");
+        return false;
+    }
+
+    uint32_t bufferCount = countBufferFilesAndMaxSeq();
+    out.println("[SD] info");
+    out.print("ready: yes\nretention_days: ");
+    out.println(sdRetentionDays);
+    out.print("auto_prune: ");
+    out.println(sdAutoPrune ? "on" : "off");
+    out.print("serial_commands: ");
+    out.println(sdSerialCommandsEnabled ? "on" : "off");
+    out.print("buffer_count: ");
+    out.println(bufferCount);
+    out.print("next_buffer_seq: ");
+    out.println(nextBufferSeq);
+    return true;
+}
+
+uint16_t storeSd_pruneLogs(Print& out) {
+    if (!sdReady) {
+        out.println("[SD] not mounted");
+        return 0;
+    }
+    if (sdRetentionDays == 0) {
+        out.println("[SD] retention disabled");
+        return 0;
+    }
+
+    uint32_t nowUnix = timeRtc_getUnixTime();
+    if (nowUnix == 0) {
+        out.println("[SD] retention skipped: RTC not valid");
+        return 0;
+    }
+
+    int32_t currentDay = static_cast<int32_t>(nowUnix / 86400UL);
+    uint16_t removed = 0;
+    FsFile dir;
+    FsFile entry;
+    char name[64];
+
+    if (!dir.open(SD_LOG_DIR, O_RDONLY) || !dir.isDir()) {
+        out.println("[SD] retention skipped: log dir missing");
+        return 0;
+    }
+
+    dir.rewind();
+    while (entry.openNext(&dir, O_RDONLY)) {
+        if (!entry.isDir() && entry.getName(name, sizeof(name)) > 0) {
+            int year = 0;
+            int month = 0;
+            int day = 0;
+            if (parseLogDateFromName(name, year, month, day)) {
+                int32_t fileDay = daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
+                if (currentDay - fileDay > static_cast<int32_t>(sdRetentionDays)) {
+                    char path[96];
+                    snprintf(path, sizeof(path), "%s/%s", SD_LOG_DIR, name);
+                    entry.close();
+                    if (sd.remove(path)) {
+                        ++removed;
+                        out.print("[SD] pruned ");
+                        out.println(path);
+                    }
+                    delay(0);
+                    continue;
+                }
+            }
+        }
+        entry.close();
+        delay(0);
+    }
+
+    dir.close();
+    out.print("[SD] prune complete, removed ");
+    out.println(removed);
+    return removed;
 }

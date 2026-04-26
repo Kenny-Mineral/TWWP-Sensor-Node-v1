@@ -185,6 +185,11 @@ void loop() {
 {
   "node_id": "wh_001",
   "sensor_interval_ms": 5000,
+  "sd": {
+    "serial_commands_enabled": true,
+    "retention_days": 365,
+    "auto_prune": false
+  },
   "flow": { "k_factor": 450 },
   "pressure": { "offset": 0.0, "scale": 1.0 },
   "calibration": {
