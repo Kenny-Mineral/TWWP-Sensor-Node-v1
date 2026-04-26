@@ -262,3 +262,83 @@ bool storeSd_drainBuffer(uint8_t maxMessages) {
 
     return allOk;
 }
+
+bool storeSd_printDirectory(const char* path, Print& out) {
+    if (!sdReady) {
+        out.println("[SD] not mounted");
+        return false;
+    }
+
+    FsFile dir;
+    FsFile entry;
+    char name[64];
+
+    if (!dir.open(path, O_RDONLY) || !dir.isDir()) {
+        out.print("[SD] directory not found: ");
+        out.println(path);
+        return false;
+    }
+
+    out.print("[SD] listing ");
+    out.println(path);
+    dir.rewind();
+    while (entry.openNext(&dir, O_RDONLY)) {
+        if (entry.getName(name, sizeof(name)) > 0) {
+            out.print(entry.isDir() ? "dir  " : "file ");
+            out.print(name);
+            if (!entry.isDir()) {
+                out.print(" ");
+                out.print(entry.fileSize());
+                out.print(" bytes");
+            }
+            out.println();
+        }
+        entry.close();
+        delay(0);
+    }
+
+    dir.close();
+    return true;
+}
+
+bool storeSd_printFile(const char* path, Print& out) {
+    if (!sdReady) {
+        out.println("[SD] not mounted");
+        return false;
+    }
+
+    FsFile file;
+    if (!file.open(path, O_RDONLY) || file.isDir()) {
+        out.print("[SD] file not found: ");
+        out.println(path);
+        return false;
+    }
+
+    out.print("[SD] begin ");
+    out.println(path);
+
+    char buf[96];
+    int bytesRead = 0;
+    char lastChar = '\0';
+    while ((bytesRead = file.read(buf, sizeof(buf))) > 0) {
+        out.write(reinterpret_cast<const uint8_t*>(buf), bytesRead);
+        lastChar = buf[bytesRead - 1];
+        delay(0);
+    }
+
+    if (bytesRead < 0) {
+        out.println();
+        out.print("[SD] read failed: ");
+        out.println(path);
+        file.close();
+        return false;
+    }
+
+    if (file.fileSize() == 0 || lastChar != '\n') {
+        out.println();
+    }
+    out.print("[SD] end ");
+    out.println(path);
+    file.close();
+    return true;
+}

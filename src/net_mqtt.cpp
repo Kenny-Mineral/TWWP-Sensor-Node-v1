@@ -17,6 +17,22 @@ static unsigned long mqtt_backoffMs = 1000; // start 1s
 static const unsigned long mqtt_backoffMaxMs = 60000; // max 60s
 static bool mqtt_justConnected = false;
 
+static bool mqttConnect(const String& clientId) {
+    watchdog_feed();
+
+    if (!secureClient.connected()) {
+        secureClient.stop();
+        if (!secureClient.connect(MQTT_HOST, MQTT_PORT, 5000)) {
+            return false;
+        }
+    }
+
+    watchdog_feed();
+    bool ok = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, TOPIC_LWT, 1, true, "offline");
+    watchdog_feed();
+    return ok;
+}
+
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // Log received command to Serial and SD
     char msg[256];
@@ -39,47 +55,16 @@ bool netMqtt_begin() {
 
     // Configure TLS CA
     secureClient.setCACert(MQTT_CA_CERT);
+    secureClient.setHandshakeTimeout(5);
 
     // Configure PubSubClient server
     mqttClient.setServer(MQTT_HOST, MQTT_PORT);
     mqttClient.setCallback(mqttCallback);
     mqttClient.setKeepAlive(15);
-    mqttClient.setSocketTimeout(5);
+    mqttClient.setSocketTimeout(3);
     mqttClient.setBufferSize(1024);
 
-    // Try a short connect window (non-blocking >10s). Keep this under watchdog rules.
-    statusLed_setState(LedState::MQTT_CONNECTING);
-    String clientId = String("twwp_") + String(NODE_ID);
-
-    unsigned long start = millis();
-    bool connected = false;
-    while (millis() - start < 3000) {
-        watchdog_feed();
-        if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, TOPIC_LWT, 1, true, "offline")) {
-            connected = true;
-            mqtt_justConnected = true;
-            break;
-        }
-        delay(200);
-    }
-
-    if (!connected) {
-        Serial.println("[MQTT] initial connect failed");
-        char tlsMsg[64] = "";
-        secureClient.lastError(tlsMsg, sizeof(tlsMsg));
-        Serial.printf("[MQTT] TLS error: %s\n", tlsMsg);
-        char buf[96];
-        snprintf(buf, sizeof(buf), "[MQTT] TLS error: %s", tlsMsg);
-        storeSd_logEvent(buf);
-        statusLed_setState(LedState::WIFI_CONNECTING);
-        return false;
-    }
-
-    // Subscriptions + post-connect tasks
-    mqttClient.subscribe(TOPIC_CMD);
-    statusLed_setState(LedState::ONLINE);
-    // Drain a few buffered messages
-    storeSd_drainBuffer(10);
+    mqtt_lastAttempt = 0;
     mqtt_backoffMs = 1000;
     return true;
 }
@@ -105,7 +90,7 @@ void netMqtt_loop() {
     Serial.print(":");
     Serial.println(MQTT_PORT);
 
-    bool ok = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, TOPIC_LWT, 1, true, "offline");
+    bool ok = mqttConnect(clientId);
     if (ok) {
         Serial.println("[MQTT] connected");
         mqtt_justConnected = true;

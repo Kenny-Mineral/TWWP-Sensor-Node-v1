@@ -6,3 +6,5 @@ void storeSd_loop();
 bool storeSd_logEvent(const char* msg);           // Append to daily CSV
 bool storeSd_bufferMessage(const char* topic, const char* payload); // Ring-buffer for offline MQTT
 bool storeSd_drainBuffer(uint8_t maxMessages = 10); // Drain buffered msgs to MQTT
+bool storeSd_printDirectory(const char* path, Print& out);
+bool storeSd_printFile(const char* path, Print& out);

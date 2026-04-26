@@ -9,19 +9,27 @@
 #include "config.h"
 #include "pins.h"
 
-static RTC_DS1307 rtc;
+static RTC_DS3231 rtc;
 static WiFiUDP ntpUdp;
 static NTPClient ntpClient(ntpUdp, "pool.ntp.org", 0, 60000UL);
 static bool rtcReady = false;
+static bool ntpStarted = false;
 static bool ntpSynced = false;
 static unsigned long nextSyncAttemptMs = 0;
 
-bool timeRtc_begin() {
-    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+static bool isValidDateTime(const DateTime& dt) {
+    return dt.year() >= 2024 &&
+           dt.month() >= 1 && dt.month() <= 12 &&
+           dt.day() >= 1 && dt.day() <= 31 &&
+           dt.hour() <= 23 &&
+           dt.minute() <= 59 &&
+           dt.second() <= 59;
+}
 
+bool timeRtc_begin() {
     rtcReady = rtc.begin(&Wire);
     if (!rtcReady) {
-        Serial.println("[RTC] DS1307 not found — scanning I2C bus:");
+        Serial.println("[RTC] DS3231 not found — scanning I2C bus:");
         Wire.setTimeOut(10);
         for (uint8_t addr = 1; addr < 127; addr++) {
             Wire.beginTransmission(addr);
@@ -32,11 +40,10 @@ bool timeRtc_begin() {
         return false;
     }
 
-    ntpClient.begin();
     nextSyncAttemptMs = 0;
 
-    if (!rtc.isrunning()) {
-        Serial.println("[RTC] DS1307 not running — setting time to compile time");
+    if (rtc.lostPower()) {
+        Serial.println("[RTC] DS3231 lost power — setting time to compile time");
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
 
@@ -50,6 +57,12 @@ void timeRtc_loop() {
 
     if (WiFi.status() != WL_CONNECTED) {
         return;
+    }
+
+    if (!ntpStarted) {
+        ntpClient.begin();
+        ntpStarted = true;
+        nextSyncAttemptMs = 0;
     }
 
     if (!ntpSynced) {
@@ -68,7 +81,7 @@ void timeRtc_loop() {
         long drift = (long)((int64_t)ntpUnix - (int64_t)rtcUnix);
 
         if (labs(drift) > 2) {
-            Serial.print("[RTC] adjusting DS1307 from ");
+            Serial.print("[RTC] adjusting DS3231 from ");
             Serial.print(rtcUnix);
             Serial.print(" to ");
             Serial.print(ntpUnix);
@@ -111,6 +124,10 @@ String timeRtc_getISOTimestamp() {
     }
 
     DateTime now = rtc.now();
+    if (!isValidDateTime(now)) {
+        return "1970-01-01T00:00:00Z";
+    }
+
     char buf[21];
     snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02uZ",
              now.year(), now.month(), now.day(),
@@ -124,6 +141,10 @@ String timeRtc_getDateString() {
     }
 
     DateTime now = rtc.now();
+    if (!isValidDateTime(now)) {
+        return "unsynced";
+    }
+
     char buf[11];
     snprintf(buf, sizeof(buf), "%04u-%02u-%02u",
              now.year(), now.month(), now.day());
@@ -135,7 +156,12 @@ uint32_t timeRtc_getUnixTime() {
         return 0;
     }
 
-    return rtc.now().unixtime();
+    DateTime now = rtc.now();
+    if (!isValidDateTime(now)) {
+        return 0;
+    }
+
+    return now.unixtime();
 }
 
 bool timeRtc_isSynced() {

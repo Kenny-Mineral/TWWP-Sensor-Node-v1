@@ -2,8 +2,8 @@
 
 // M0 — active
 #define PIN_LEAK_DO      6   // MH-RD leak detector, INPUT_PULLUP, LOW=wet
-#define PIN_I2C_SDA      9   // DS1307 RTC + microSD combo module
-#define PIN_I2C_SCL      3   // DS1307 RTC + microSD combo module (strapping pin, fine as driven clock)
+#define PIN_I2C_SDA      9   // DS3231 RTC + microSD combo module
+#define PIN_I2C_SCL      3   // DS3231 RTC + microSD combo module (strapping pin, fine as driven clock)
 #define PIN_SD_MOSI     11   // SPI2
 #define PIN_SD_SCK      12
 #define PIN_SD_MISO     13

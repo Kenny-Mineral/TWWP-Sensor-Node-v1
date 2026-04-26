@@ -1,9 +1,11 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <cstring>
 
 #include "config.h"
+#include "pins.h"
 #include "net_wifi.h"
 #include "net_mqtt.h"
 #include "time_rtc.h"
@@ -64,6 +66,9 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
 
 static void serviceSerialConsole() {
     static bool wasConnected = false;
+    static char line[128];
+    static size_t lineLen = 0;
+    static bool lastWasLineEnd = false;
     bool connected = Serial;
 
     if (connected && !wasConnected) {
@@ -71,9 +76,53 @@ static void serviceSerialConsole() {
         Serial.println("[SERIAL] console connected");
         Serial.print("[SERIAL] leak state: ");
         Serial.println(leakStateText());
+        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>");
     }
 
     wasConnected = connected;
+
+    while (Serial.available() > 0) {
+        char c = (char)Serial.read();
+
+        if (c == '\r' || c == '\n') {
+            if (lastWasLineEnd && lineLen == 0) {
+                continue;
+            }
+            lastWasLineEnd = true;
+            line[lineLen] = '\0';
+
+            if (lineLen > 0) {
+                char* cmd = line;
+                while (*cmd == ' ' || *cmd == '\t') {
+                    ++cmd;
+                }
+                if (strncmp(cmd, "!:", 2) == 0) {
+                    cmd += 2;
+                }
+
+                if (strcmp(cmd, "sdls") == 0) {
+                    storeSd_printDirectory("/", Serial);
+                } else if (strncmp(cmd, "sdls ", 5) == 0) {
+                    storeSd_printDirectory(cmd + 5, Serial);
+                } else if (strncmp(cmd, "sdcat ", 6) == 0) {
+                    storeSd_printFile(cmd + 6, Serial);
+                } else if (strcmp(cmd, "help") == 0) {
+                    Serial.println("[SERIAL] commands: sdls [path], sdcat <path>");
+                } else {
+                    Serial.print("[SERIAL] unknown command: ");
+                    Serial.println(cmd);
+                }
+            }
+
+            lineLen = 0;
+            continue;
+        }
+
+        if (lineLen + 1 < sizeof(line)) {
+            line[lineLen++] = c;
+            lastWasLineEnd = false;
+        }
+    }
 }
 
 static bool publishLeakAlert() {
@@ -180,6 +229,8 @@ void setup() {
 
     statusLed_begin();
     statusLed_setState(LedState::BOOTING);
+
+    Wire.setPins(PIN_I2C_SDA, PIN_I2C_SCL);
 
     storeSd_begin();
     timeRtc_begin();
