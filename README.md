@@ -75,6 +75,10 @@ pio device monitor
 
 First boot: AP `TWWP-Setup-<chipid>` (password `wateriswet`) → connect, browse to `192.168.4.1`, enter WiFi creds. Node joins WiFi, syncs NTP, connects MQTT/TLS, registers with HA.
 
+## User Operations
+
+Day-to-day commands for upload, monitor, SD log listing, SD file dumps, log deletion, and retention settings are in `docs/USER_OPERATIONS.md`.
+
 ## File map
 
 ```
@@ -109,6 +113,7 @@ twwp-node/
 │   ├── HA_DISCOVERY.md
 │   ├── FAILSAFE_DESIGN.md
 │   ├── WIRING_M0.md
+│   ├── USER_OPERATIONS.md
 │   ├── FIRMWARE_ARCHITECTURE.md
 │   ├── CALIBRATION.md        ← M6
 │   ├── SOLENOID_DRIVER.md    ← M3
