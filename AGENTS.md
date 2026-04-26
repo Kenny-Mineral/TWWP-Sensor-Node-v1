@@ -17,6 +17,19 @@ Update `docs/SESSION.md`:
 
 Commit: `git add docs/SESSION.md && git commit -m "chore: session handoff [codex]"`
 
+## User documentation rule
+
+Update `docs/USER_OPERATIONS.md` in the same commit whenever a change affects user-facing operation, including:
+- upload, monitor, setup, or reset steps
+- serial commands or command syntax
+- `/config/node.json` fields
+- expected boot or monitor output
+- SD layout, log files, retention, export, or cleanup behavior
+- MQTT/offload behavior visible to the user
+- troubleshooting steps discovered during testing
+
+If unsure, update the doc. Keep `docs/SESSION.md` aligned with any operational doc changes.
+
 ## Locked decisions — never change
 
 - Stack: PlatformIO + Arduino framework

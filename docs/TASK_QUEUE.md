@@ -3,6 +3,8 @@
 Ordered milestone task list. Pick up at the first unchecked `[ ]` item.
 Design rules, locked decisions, and standing rules are in `docs/FIRMWARE_ARCHITECTURE.md`.
 
+User-facing command, setup, config, troubleshooting, SD, MQTT/offload, or monitor-output changes must update `docs/USER_OPERATIONS.md` in the same commit.
+
 ---
 
 ## M0 — bring-up
