@@ -2,18 +2,29 @@
 _Update before switching tools. Commit immediately after._
 
 ## Last done
-M0 complete plus RTC/SD logger bring-up. PlatformIO firmware flashed and confirmed working. WiFi connects, MQTT TLS connects to twwp-iot.duckdns.org:8883, HA discovery publishes, leak sensor fires WET/DRY in HA under TWWP-WH-001 device, telemetry publishes every 10s with non-zero RTC timestamps.
-
-DS3231 on GPIO9/GPIO3 is detected and NTP drift sync works. SD logging is verified through the serial console: `sdls /log` lists `/log/2026-04-26.csv`, and `sdcat /log/2026-04-26.csv` dumps leak events over USB. SD maintenance commands now include `sdrm <path>`, `sdinfo`, and `sdprune`. Optional retention settings are loaded from `/config/node.json` under `sd.retention_days`, `sd.auto_prune`, and `sd.serial_commands_enabled`. User-facing commands and how-to notes are documented in `docs/USER_OPERATIONS.md`. Existing `2000-00-00.csv` is a harmless pre-fix artifact; invalid RTC reads now fall back to `/log/unsynced.csv`.
+Implemented M1 flow sensor driver — interrupt-driven pulse counter on GPIO4/5, K-factor loaded from node.json, two-layer persistence (NVS every 10s + SD every 60s), HA discovery for all flow entities, time-series CSV data log to /data/YYYY-MM-DD.csv, and updated all architecture/operations docs.
 
 ## In progress
-Nothing — RTC/SD logger bring-up verified and ready for next module. `AGENTS.md` and `docs/TASK_QUEUE.md` now require `docs/USER_OPERATIONS.md` updates when user-facing operation changes.
+Uncommitted changes:
+- docs/FIRMWARE_ARCHITECTURE.md
+- docs/PIN_ALLOCATION.md
+- docs/TASK_QUEUE.md
+- docs/USER_OPERATIONS.md
+- include/config.h
+- include/pins.h
+- src/main.cpp
+- src/store_sd.cpp
+- src/store_sd.h
+- src/sensor_flow.cpp (new)
+- src/sensor_flow.h (new)
+- src/sensor_flow_stub.cpp (deleted)
+- src/sensor_flow_stub.h (deleted)
 
 ## Next step
-Continue data logger polish or move to the next hardware module. Useful logger polish items: expose SD status/buffer count in heartbeat JSON, implement SD write failure surfacing, and add server-side/cloud log offload.
+M2 — Confirm pressure transducer model + PSI range with user before ordering.
 
 ## Tool last used
-codex
+claude-code
 
 ## Updated
-2026-04-27 17:56
+2026-04-27 19:30
