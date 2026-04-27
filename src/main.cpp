@@ -14,6 +14,7 @@
 #include "status_led.h"
 #include "sensor_leak.h"
 #include "sensor_flow.h"
+#include "session_flow.h"
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
 #include "actuator_solenoid_stub.h"
@@ -66,8 +67,14 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["flow_year_2"]  = sensorFlow_getYearL(2);
     doc["k_factor_1"]   = sensorFlow_getKFactor(1);
     doc["k_factor_2"]   = sensorFlow_getKFactor(2);
+    doc["session_last_id"]       = sessionFlow_getLastId();
+    doc["session_last_start_ts"] = sessionFlow_getLastStartTs();
+    doc["session_last_end_ts"]   = sessionFlow_getLastEndTs();
+    doc["session_last_dur_s"]    = sessionFlow_getLastDurationS();
+    doc["session_last_vol_out"]  = sessionFlow_getLastVolumeOut();
+    doc["session_last_vol_in"]   = sessionFlow_getLastVolumeIn();
 
-    char payload[768];
+    char payload[1024];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
         Serial.println("[M0] status JSON too large");
         return false;
@@ -355,6 +362,43 @@ static bool publishHaDiagSensor(const char* uid, const char* name, const char* v
     char topic[128];
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
     return netMqtt_publish(topic, payload, true);
+}
+
+static bool publishHaDiscoverySession() {
+    bool ok = true;
+
+    auto pub = [&ok](const char* uid, const char* name, const char* valueKey,
+                     const char* unit, const char* stateClass) {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["entity_category"]  = "diagnostic";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+        doc["value_template"]      = tmpl;
+        if (unit && unit[0])        doc["unit_of_measurement"] = unit;
+        if (stateClass && stateClass[0]) doc["state_class"] = stateClass;
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[512];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    pub("twwp_" NODE_ID "_session_last_id",      "Last Session ID",          "session_last_id",       "",  "");
+    pub("twwp_" NODE_ID "_session_last_dur_s",   "Last Session Duration",    "session_last_dur_s",    "s", "measurement");
+    pub("twwp_" NODE_ID "_session_last_vol_out", "Last Session Volume Out",  "session_last_vol_out",  "L", "measurement");
+    pub("twwp_" NODE_ID "_session_last_vol_in",  "Last Session Volume In",   "session_last_vol_in",   "L", "measurement");
+
+    Serial.print("[MQTT] HA session discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
 }
 
 static bool publishHaDiscoveryDiagnostics() {
