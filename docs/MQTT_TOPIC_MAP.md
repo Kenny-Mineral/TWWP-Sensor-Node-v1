@@ -14,6 +14,7 @@ QoS is 0 for all topics. Retain and direction as noted.
 | `twwp/<id>/alert` | no | node → broker | Leak state-change events (`LEAK_STATE` type). |
 | `twwp/<id>/log` | no | node → broker | SD failure notifications (rate-limited 1/min). |
 | `twwp/<id>/lwt` | yes | node → broker | Last-will / availability: `online` when connected, broker publishes `offline` on unexpected disconnect. |
+| `twwp/<id>/session` | no | node → broker | Session-end event. Published when the 90 s idle timeout expires. JSON payload with session_id, start_ts, end_ts, duration_s, volume_out_L, volume_in_L, peak_rate_out, peak_rate_in. |
 | `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4). |
 | `twwp/register` | no | node → broker | First-connect registration payload (M8 — not yet implemented). |
 
@@ -71,6 +72,12 @@ The node subscribes to `twwp/<id>/cmd`. Payload must be valid JSON. Supported ke
 |---|---|---|
 | `set_k_factor_1` | int | Set K factor for flow channel 1. Saved to `node.json`. |
 | `set_k_factor_2` | int | Set K factor for flow channel 2. Saved to `node.json`. |
+| `reset_flow_today_1` | bool | Zero today/week/month/year subtotals for channel 1. Saved to SD. |
+| `reset_flow_today_2` | bool | Zero today/week/month/year subtotals for channel 2. Saved to SD. |
+| `reset_flow_today` | bool | Zero today/week/month/year subtotals for both channels. |
+| `reset_flow_totals_1` | bool | Zero lifetime total + all subtotals for channel 1. Clears NVS + SD. |
+| `reset_flow_totals_2` | bool | Zero lifetime total + all subtotals for channel 2. Clears NVS + SD. |
+| `reset_flow_totals` | bool | Zero all flow data for both channels. Clears NVS + SD. |
 
 Example (sent automatically by HA when user changes the K Factor 1 number entity to 200):
 

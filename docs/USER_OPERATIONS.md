@@ -233,6 +233,12 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `flow_year_2` | number | Flow sensor 2 — usage this year (L, resets 1 Jan). |
 | `k_factor_1` | number | Active K value for flow sensor 1 (pulses/L). Set in `node.json`. |
 | `k_factor_2` | number | Active K value for flow sensor 2 (pulses/L). Set in `node.json`. |
+| `session_last_id` | number | ID of the most recently completed session. |
+| `session_last_start_ts` | number | Unix timestamp when the last session started. |
+| `session_last_end_ts` | number | Unix timestamp when the last session ended. |
+| `session_last_dur_s` | number | Duration of the last session in seconds. |
+| `session_last_vol_out` | number | Volume through RO Output (sensor 1) during last session, in litres. |
+| `session_last_vol_in` | number | Volume through RO Input (sensor 2) during last session, in litres. |
 
 Note: period subtotals (today/week/month/year) reset correctly across RTC date boundaries. If the node is powered off across a boundary, the subtotals resume from the saved value for that day but reset on the next boundary. The lifetime total (`flow_total_*`) always survives reboots — it is persisted to `/config/flow_total.json` on the SD card every 60 seconds.
 
@@ -315,6 +321,64 @@ The K value (pulses per litre) is loaded from `/config/node.json` at boot. Chang
 |---|---|
 | USN-HS06PE (0.3–6.0 LPM) | 38 |
 | USN-HS06PS (0.1–1.0 LPM) | 200 |
+
+## Session Tracking
+
+A "session" is a continuous usage event at the RO tap. A session starts when flow on either sensor exceeds 0.05 L/min and ends 90 seconds after flow stops on both sensors. If flow resumes within the 90-second window, it extends the same session.
+
+When a session ends, the node publishes to `twwp/<node_id>/session` and appends a row to:
+
+```
+/log/sessions.csv
+```
+
+Session log columns:
+
+```
+session_id,start_ts,end_ts,duration_s,volume_out_L,volume_in_L,peak_rate_out,peak_rate_in
+```
+
+View via serial:
+
+```
+sdcat /log/sessions.csv
+```
+
+The last session fields also appear in the heartbeat status (`session_last_id`, `session_last_dur_s`, `session_last_vol_out`, `session_last_vol_in`) and are visible as diagnostic sensors on the main TWWP device card in HA.
+
+Session IDs survive reboots (persisted in NVS).
+
+## Flow Reset Commands
+
+Reset commands are available via MQTT (`twwp/<node_id>/cmd`), HA device card buttons, and serial console.
+
+| Command | Effect |
+|---|---|
+| `reset_flow_today_1` | Zero today/week/month/year for RO Output (channel 1). Saved to SD. |
+| `reset_flow_today_2` | Zero today/week/month/year for RO Input (channel 2). Saved to SD. |
+| `reset_flow_today` | Zero period subtotals for both channels. Saved to SD. |
+| `reset_flow_totals_1` | Zero lifetime total + all subtotals for channel 1. Clears NVS + SD. |
+| `reset_flow_totals_2` | Zero lifetime total + all subtotals for channel 2. Clears NVS + SD. |
+| `reset_flow_totals` | Zero all flow data for both channels. Clears NVS + SD. |
+
+Via serial console:
+
+```
+reset_flow_today
+reset_flow_today_1
+reset_flow_today_2
+reset_flow_totals
+reset_flow_totals_1
+reset_flow_totals_2
+```
+
+Via MQTT (example):
+
+```json
+{"reset_flow_today_1": true}
+```
+
+HA buttons: "Reset Today" and "Reset Totals" appear on the RO Output and RO Input device cards. "Reset Today (Both)" and "Reset Totals (Both)" appear on the main TWWP node card.
 
 The active K value is published in the heartbeat as `k_factor_1` / `k_factor_2` and appears as a diagnostic sensor in HA — useful to confirm the correct sensor is configured without checking the SD card.
 
