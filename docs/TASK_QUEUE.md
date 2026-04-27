@@ -27,60 +27,74 @@ User-facing command, setup, config, troubleshooting, SD, MQTT/offload, or monito
 ### M0.3 — Polish
 - [x] **SD serial maintenance.** `sdls`, `sdcat`, `sdrm`, `sdinfo`, and `sdprune` over USB serial.
 - [x] **SD retention config.** Optional `sd.retention_days`, `sd.auto_prune`, and `sd.serial_commands_enabled` loaded from `/config/node.json`.
-- [ ] **Buffer overflow cap.** `storeSd_bufferMessage()` has no cap. If `s_seq - oldestSeq > SD_MAX_BUFFER_LINES`, delete oldest before writing, append warning to `/log/crashes.txt`.
-- [ ] **SD-failure surfacing.** On write failure in `store_sd.cpp`, publish `"sd write failed"` to `twwp/<id>/log` via MQTT (rate-limited 1/min).
-- [ ] **Reset-creds gesture.** `digitalRead(0) == LOW` held > 5s in `loop()` → `netWifi_resetCredentials()`.
-- [ ] **Heartbeat enrichment.** Add `wifi_ssid`, `ip`, `mqtt_buffer_count` to heartbeat JSON.
-- [ ] **HA device availability.** Single `device_availability` block on all discovery payloads — DRY.
+- [x] **Buffer overflow cap.** `storeSd_bufferMessage()` drops oldest before writing and appends warning to `/log/crashes.txt`.
+- [x] **SD-failure surfacing.** On write failure in `store_sd.cpp`, publish `"sd write failed: <context>"` to `twwp/<id>/log` via MQTT (rate-limited 1/min).
+- [x] **Reset-creds gesture.** `digitalRead(PIN_RESET_CREDS) == LOW` held > 5s in `loop()` → `netWifi_resetCredentials()`.
+- [x] **Heartbeat enrichment.** Added `wifi_ssid`, `ip`, `mqtt_buffer_count` to heartbeat JSON.
+- [x] **HA device availability.** `fillHaDevice()` helper extracted — shared by all discovery payloads.
 
 ---
 
-## M0.5 — TLS + security hardening
+## M0.5 — TLS + security hardening ✓ DONE
 
-> Do this before M1. Public MQTT without TLS is unacceptable.
+All items complete. TLS on port 8883 confirmed working end-to-end.
 
-### Server-side (user does manually)
-- [ ] Let's Encrypt cert exists for `twwp-iot.duckdns.org`. If not: `certbot certonly --standalone -d twwp-iot.duckdns.org`.
-- [ ] `mosquitto.conf`: `listener 8883`, cert/key/cafile paths, `allow_anonymous false`, `password_file`.
-- [ ] `ufw deny 1883/tcp`. `ufw allow 8883/tcp`.
-- [ ] Add per-device passwords: `mosquitto_passwd -b /mosquitto/config/passwordfile twwp_wh_001 <pass>`.
-- [ ] Verify: `mosquitto_pub -h twwp-iot.duckdns.org -p 8883 --cafile ca.crt -u twwp_wh_001 -P <pass> -t test -m hello`.
+### Server-side
+- [x] Let's Encrypt cert on `twwp-iot.duckdns.org`.
+- [x] `mosquitto.conf`: listener 8883, cert/key/cafile, `allow_anonymous false`, `password_file`.
+- [x] `ufw`: 1883 blocked, 8883 open.
+- [x] Per-device credentials: `twwp_wh_001` in passwordfile.
+- [x] Verified: MQTT TLS connects cleanly.
 
-### Firmware-side (agent does)
-- [ ] `secrets.h.sample`: add `MQTT_PORT 8883` and `MQTT_CA_CERT` (raw string PEM literal).
-- [ ] `net_mqtt.cpp`: replace `WiFiClient` with `WiFiClientSecure`. Call `client.setCACert(MQTT_CA_CERT)` before connect.
-- [ ] `config.h`: `#define MQTT_CLIENT_ID "twwp_" NODE_ID`.
-- [ ] On TLS handshake failure: log SSL error code to serial + SD crashes log. Retry with backoff.
-- [ ] Update `docs/MQTT_TOPIC_MAP.md` — note port 8883 only.
+### Firmware-side
+- [x] `secrets.h.sample`: `MQTT_PORT 8883`, `MQTT_CA_CERT` PEM literal.
+- [x] `net_mqtt.cpp`: `WiFiClientSecure` + `setCACert(MQTT_CA_CERT)`. Never falls back to plain MQTT.
+- [x] Client ID: `"twwp_" NODE_ID` (built in `netMqtt_loop()`).
+- [x] TLS handshake failure: logs SSL error to serial + SD crash log, retries with exponential backoff.
+- [ ] Create `docs/MQTT_TOPIC_MAP.md` — topic list with QoS, retain, and description. (Deferred to M1.)
 
 ---
 
 ## M1 — Hall flow sensor
 
-- [ ] Confirm part number with user (YF-S201? K-factor depends on part).
-- [ ] Update `docs/PIN_ALLOCATION.md` — commit GPIO4 for flow #1.
-- [ ] Replace `sensor_flow_stub.{h,cpp}` with `sensor_flow.{h,cpp}`.
-- [ ] HA discovery: `flow_rate` (`measurement`, `L/min`) and `flow_total` (`total_increasing`, `L`).
-- [ ] Update `docs/MQTT_TOPIC_MAP.md` and `docs/HA_DISCOVERY.md`.
+Sensors confirmed: USN-HS06PE (K=38, 0.3–6.0 LPM) and USN-HS06PS (K=200, 0.1–1.0 LPM). See `docs/COMPONENTS.md` for full sensor library.
+K value loaded from `/config/node.json` (`flow.k_factor_1`, `flow.k_factor_2`) — no reflash needed to swap sensors.
+
+- [x] Confirm part number. USN-HS06PE (K=38) and USN-HS06PS (K=200).
+- [x] Replace `sensor_flow_stub.{h,cpp}` with `sensor_flow.{h,cpp}`.
+  - Interrupt-driven pulse counter on GPIO4 (flow #1) and GPIO5 (flow #2).
+  - Load K factor from `node.json`; default 38 if absent.
+  - Expose: `sensorFlow_getRateLpm(uint8_t ch)`, `sensorFlow_getTotalL(uint8_t ch)`, plus today/week/month/year subtotals and `sensorFlow_getKFactor(uint8_t ch)`.
+  - Two-layer persistence: NVS (Preferences) every 10 s, SD `/config/flow_total.json` every 60 s.
+- [x] HA discovery: `flow_rate` (`measurement`, `L/min`), `flow_total` (`total_increasing`, `L`), today/week/month/year (`measurement`, `L`), and K factor (diagnostic) per channel.
+- [x] Add all flow and K-factor fields to heartbeat JSON.
+- [x] Time-series CSV log: `/data/YYYY-MM-DD.csv` written every 60 s with all current sensor readings.
+- [x] Create `docs/MQTT_TOPIC_MAP.md` with all current topics.
+- [x] Update `docs/PIN_ALLOCATION.md` — mark GPIO4/5 confirmed for flow sensors.
 
 ---
 
-## M2 — Pressure + DS18B20
+## M2 — Pressure sensor
 
-- [ ] Confirm pressure transducer model with user (need PSI range and output voltage).
+No DS18B20 — temperature comes from YiErYi 3788 RS485 sensor (M5). Pressure sensor not yet purchased.
+
+- [ ] Confirm pressure transducer model + PSI range with user before ordering.
 - [ ] Pressure: averaged ADC read on GPIO7. Voltage divider 2:1 (0–5V → 0–2.5V).
-- [ ] DS18B20: `OneWire` + `DallasTemperature`. Auto-discover ROMs at boot, expose by index.
-- [ ] HA discovery: `pressure` and `temperature` per probe.
+- [ ] HA discovery: `pressure` (measurement, kPa or PSI — confirm unit with user).
+- [ ] Add `pressure` to heartbeat JSON and `docs/COMPONENTS.md`.
 
 ---
 
-## M3 — Solenoid command channel
+## M3 — Actuator command channel
 
-- [ ] Confirm device with user — solenoid or flow switch.
-- [ ] If solenoid: N-MOSFET driver (IRLZ44N + 1N4007 flyback). Document in `docs/SOLENOID_DRIVER.md`.
+Actuator not yet purchased — solenoid valve or motorised ball valve TBD.
+
+- [ ] Confirm actuator type (solenoid valve or motorised ball valve) and purchase.
+- [ ] Document driver circuit in `docs/ACTUATOR_DRIVER.md` once type confirmed.
 - [ ] Replace `actuator_solenoid_stub.{h,cpp}`.
-- [ ] `net_mqtt.cpp::onMessage`: parse `{"solenoid":"open"|"close"}`.
-- [ ] Safety: auto-close after N minutes if no confirmation, configurable in `node.json`.
+- [ ] MQTT command: parse `{"actuator":"open"|"close"}` on `twwp/<id>/cmd`.
+- [ ] Safety: auto-close after N minutes if no heartbeat/confirmation, configurable in `node.json`.
+- [ ] Update `docs/COMPONENTS.md` with actuator model + URL.
 
 ---
 

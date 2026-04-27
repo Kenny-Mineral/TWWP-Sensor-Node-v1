@@ -13,7 +13,7 @@
 #include "watchdog.h"
 #include "status_led.h"
 #include "sensor_leak.h"
-#include "sensor_flow_stub.h"
+#include "sensor_flow.h"
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
 #include "actuator_solenoid_stub.h"
@@ -40,10 +40,34 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["leak"] = sensorLeak_isWet();
     doc["leak_state"] = leakStateText();
     doc["uptime_ms"] = millis();
-    doc["wifi_rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+    bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    int rssi = wifiUp ? WiFi.RSSI() : 0;
+    doc["wifi_rssi"]       = rssi;
+    doc["wifi_signal_pct"] = wifiUp ? max(0, min(100, 2 * (rssi + 100))) : 0;
+    doc["wifi_ssid"]       = wifiUp ? WiFi.SSID()            : "";
+    doc["wifi_bssid"]      = wifiUp ? WiFi.BSSIDstr()        : "";
+    doc["ip"]              = wifiUp ? WiFi.localIP().toString() : "";
+    doc["wifi_status"]     = wifiUp ? "Connected" : "Disconnected";
+    doc["uptime_s"]        = (uint32_t)(millis() / 1000UL);
+    doc["mqtt_buffer_count"] = storeSd_bufferCount();
     doc["ts"] = timeRtc_getUnixTime();
 
-    char payload[320];
+    doc["flow_rate_1"]  = sensorFlow_getRateLpm(1);
+    doc["flow_rate_2"]  = sensorFlow_getRateLpm(2);
+    doc["flow_total_1"] = sensorFlow_getTotalL(1);
+    doc["flow_total_2"] = sensorFlow_getTotalL(2);
+    doc["flow_today_1"] = sensorFlow_getTodayL(1);
+    doc["flow_today_2"] = sensorFlow_getTodayL(2);
+    doc["flow_week_1"]  = sensorFlow_getWeekL(1);
+    doc["flow_week_2"]  = sensorFlow_getWeekL(2);
+    doc["flow_month_1"] = sensorFlow_getMonthL(1);
+    doc["flow_month_2"] = sensorFlow_getMonthL(2);
+    doc["flow_year_1"]  = sensorFlow_getYearL(1);
+    doc["flow_year_2"]  = sensorFlow_getYearL(2);
+    doc["k_factor_1"]   = sensorFlow_getKFactor(1);
+    doc["k_factor_2"]   = sensorFlow_getKFactor(2);
+
+    char payload[768];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
         Serial.println("[M0] status JSON too large");
         return false;
@@ -150,6 +174,112 @@ static bool publishLeakAlert() {
     return true;
 }
 
+static void fillHaDevice(JsonDocument& doc) {
+    JsonObject device = doc["device"].to<JsonObject>();
+    JsonArray identifiers = device["identifiers"].to<JsonArray>();
+    identifiers.add("twwp_" NODE_ID);
+    device["name"] = "TWWP " NODE_ID;
+    device["manufacturer"] = "TWWP";
+    device["model"] = "Waveshare ESP32-S3 RS485 CAN";
+    device["sw_version"] = NODE_FIRMWARE_VERSION;
+}
+
+static bool publishHaFlowSensor(const char* uid, const char* name, const char* valueKey,
+                                 const char* unit, const char* deviceClass,
+                                 const char* stateClass) {
+    JsonDocument doc;
+    doc["name"]       = name;
+    doc["unique_id"]  = uid;
+    doc["object_id"]  = uid;
+    doc["state_topic"] = TOPIC_STATUS;
+    char tmpl[64];
+    snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+    doc["value_template"]      = tmpl;
+    doc["unit_of_measurement"] = unit;
+    if (deviceClass && deviceClass[0]) {
+        doc["device_class"] = deviceClass;
+    }
+    doc["state_class"]          = stateClass;
+    doc["availability_topic"]   = TOPIC_LWT;
+    doc["payload_available"]    = "online";
+    doc["payload_not_available"] = "offline";
+    fillHaDevice(doc);
+
+    char payload[768];
+    if (!serializeDoc(doc, payload, sizeof(payload))) {
+        Serial.println("[MQTT] flow HA discovery JSON too large");
+        return false;
+    }
+    char topic[128];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
+    return netMqtt_publish(topic, payload, true);
+}
+
+static bool publishHaDiscoveryFlow() {
+    bool ok = true;
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_1",  "TWWP " NODE_ID " Flow Rate 1",  "flow_rate_1",  "L/min", "volume_flow_rate", "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_2",  "TWWP " NODE_ID " Flow Rate 2",  "flow_rate_2",  "L/min", "volume_flow_rate", "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_1", "TWWP " NODE_ID " Flow Total 1", "flow_total_1", "L",     "water",             "total_increasing");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_2", "TWWP " NODE_ID " Flow Total 2", "flow_total_2", "L",     "water",             "total_increasing");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_1", "TWWP " NODE_ID " Flow Today 1", "flow_today_1", "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_2", "TWWP " NODE_ID " Flow Today 2", "flow_today_2", "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_1",  "TWWP " NODE_ID " Flow Week 1",  "flow_week_1",  "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_2",  "TWWP " NODE_ID " Flow Week 2",  "flow_week_2",  "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_1", "TWWP " NODE_ID " Flow Month 1", "flow_month_1", "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_2", "TWWP " NODE_ID " Flow Month 2", "flow_month_2", "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_1",  "TWWP " NODE_ID " Flow Year 1",  "flow_year_1",  "L",     "",                  "measurement");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_2",  "TWWP " NODE_ID " Flow Year 2",  "flow_year_2",  "L",     "",                  "measurement");
+    // K factor entities are writable number entities, not read-only sensors.
+    // Clear any previously published sensor entities for K factors.
+    netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_1/config", "", true);
+    netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_2/config", "", true);
+
+    // Publish writable number entities for K factors
+    auto publishKFactorNumber = [&ok](const char* uid, const char* name,
+                                       const char* valueKey, const char* cmdKey) {
+        JsonDocument doc;
+        doc["name"]       = name;
+        doc["unique_id"]  = uid;
+        doc["object_id"]  = uid;
+        doc["state_topic"] = TOPIC_STATUS;
+        char tmpl[64];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s | int }}", valueKey);
+        doc["value_template"]      = tmpl;
+        doc["command_topic"]       = TOPIC_CMD;
+        char cmdTmpl[64];
+        snprintf(cmdTmpl, sizeof(cmdTmpl), "{\"%s\": {{ value | int }}}", cmdKey);
+        doc["command_template"]    = cmdTmpl;
+        doc["unit_of_measurement"] = "pulses/L";
+        doc["min"]                 = 1;
+        doc["max"]                 = 9999;
+        doc["step"]                = 1;
+        doc["mode"]                = "box";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) {
+            Serial.println("[MQTT] K factor number JSON too large");
+            ok = false;
+            return;
+        }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_1", "TWWP " NODE_ID " K Factor 1",
+                         "k_factor_1", "set_k_factor_1");
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_2", "TWWP " NODE_ID " K Factor 2",
+                         "k_factor_2", "set_k_factor_2");
+
+    Serial.print("[MQTT] HA flow discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static bool publishHaDiscovery() {
     JsonDocument doc;
     doc["name"] = "TWWP " NODE_ID " Leak";
@@ -162,13 +292,7 @@ static bool publishHaDiscovery() {
     doc["payload_available"] = "online";
     doc["payload_not_available"] = "offline";
 
-    JsonObject device = doc["device"].to<JsonObject>();
-    JsonArray identifiers = device["identifiers"].to<JsonArray>();
-    identifiers.add("twwp_" NODE_ID);
-    device["name"] = "TWWP " NODE_ID;
-    device["manufacturer"] = "TWWP";
-    device["model"] = "Waveshare ESP32-S3 RS485 CAN";
-    device["sw_version"] = NODE_FIRMWARE_VERSION;
+    fillHaDevice(doc);
 
     char payload[768];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
@@ -183,6 +307,93 @@ static bool publishHaDiscovery() {
     return ok;
 }
 
+static bool publishHaDiagSensor(const char* uid, const char* name, const char* valueKey,
+                                  const char* unit, const char* deviceClass,
+                                  const char* stateClass) {
+    JsonDocument doc;
+    doc["name"]              = name;
+    doc["unique_id"]         = uid;
+    doc["object_id"]         = uid;
+    doc["entity_category"]   = "diagnostic";
+    doc["state_topic"]       = TOPIC_STATUS;
+    char tmpl[64];
+    snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+    doc["value_template"]      = tmpl;
+    if (unit && unit[0])        doc["unit_of_measurement"] = unit;
+    if (deviceClass && deviceClass[0]) doc["device_class"] = deviceClass;
+    if (stateClass && stateClass[0])   doc["state_class"]  = stateClass;
+    doc["availability_topic"]   = TOPIC_LWT;
+    doc["payload_available"]    = "online";
+    doc["payload_not_available"] = "offline";
+    fillHaDevice(doc);
+
+    char payload[768];
+    if (!serializeDoc(doc, payload, sizeof(payload))) {
+        Serial.println("[MQTT] diag sensor JSON too large");
+        return false;
+    }
+    char topic[128];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
+    return netMqtt_publish(topic, payload, true);
+}
+
+static bool publishHaDiscoveryDiagnostics() {
+    bool ok = true;
+
+    // WiFi connectivity binary sensor
+    {
+        JsonDocument doc;
+        doc["name"]               = "TWWP " NODE_ID " WiFi Status";
+        doc["unique_id"]          = "twwp_" NODE_ID "_wifi_status";
+        doc["object_id"]          = "twwp_" NODE_ID "_wifi_status";
+        doc["entity_category"]    = "diagnostic";
+        doc["device_class"]       = "connectivity";
+        doc["state_topic"]        = TOPIC_STATUS;
+        doc["value_template"]     = "{{ value_json.wifi_status }}";
+        doc["payload_on"]         = "Connected";
+        doc["payload_off"]        = "Disconnected";
+        doc["availability_topic"]  = TOPIC_LWT;
+        doc["payload_available"]   = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish("homeassistant/binary_sensor/twwp_" NODE_ID "_wifi_status/config", payload, true);
+        }
+    }
+
+    // Restart WiFi button
+    {
+        JsonDocument doc;
+        doc["name"]               = "TWWP " NODE_ID " Restart WiFi";
+        doc["unique_id"]          = "twwp_" NODE_ID "_restart_wifi";
+        doc["object_id"]          = "twwp_" NODE_ID "_restart_wifi";
+        doc["entity_category"]    = "config";
+        doc["command_topic"]      = TOPIC_CMD;
+        doc["payload_press"]      = "{\"restart_wifi\": true}";
+        doc["availability_topic"]  = TOPIC_LWT;
+        doc["payload_available"]   = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish("homeassistant/button/twwp_" NODE_ID "_restart_wifi/config", payload, true);
+        }
+    }
+
+    // Sensor entities
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_ssid",       "TWWP " NODE_ID " WiFi SSID",         "wifi_ssid",       "",     "",               "");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_bssid",      "TWWP " NODE_ID " WiFi BSSID",        "wifi_bssid",      "",     "",               "");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_ip",              "TWWP " NODE_ID " IP Address",        "ip",              "",     "",               "");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_rssi",       "TWWP " NODE_ID " WiFi Signal dB",    "wifi_rssi",       "dBm",  "signal_strength", "measurement");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_signal_pct", "TWWP " NODE_ID " WiFi Signal",       "wifi_signal_pct", "%",    "",               "measurement");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_uptime_s",        "TWWP " NODE_ID " Running Time",      "uptime_s",        "s",    "duration",       "measurement");
+
+    Serial.print("[MQTT] HA diagnostics discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static void publishOnlineState() {
     if (!netMqtt_isConnected()) {
         return;
@@ -190,6 +401,8 @@ static void publishOnlineState() {
 
     netMqtt_publish(TOPIC_LWT, "online", true);
     publishHaDiscovery();
+    publishHaDiscoveryFlow();
+    publishHaDiscoveryDiagnostics();
     publishM0Status(true, false);
     lastHeartbeatMs = millis();
 }
@@ -218,6 +431,71 @@ static void handleHeartbeat() {
     publishM0Status(true, false);
 }
 
+static void handleResetCredsButton() {
+    static unsigned long pressedAt = 0;
+    static bool wasPressed = false;
+
+    bool pressed = (digitalRead(PIN_RESET_CREDS) == LOW);
+
+    if (pressed && !wasPressed) {
+        pressedAt = millis();
+        wasPressed = true;
+    } else if (!pressed) {
+        wasPressed = false;
+    } else if (pressed && (millis() - pressedAt >= RESET_CREDS_HOLD_MS)) {
+        Serial.println("[BOOT] reset-creds gesture — clearing WiFi credentials");
+        storeSd_logEvent("[BOOT] reset-creds gesture — clearing WiFi credentials");
+        netWifi_resetCredentials();
+    }
+}
+
+static void handleCmd(const char* payload) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) {
+        Serial.println("[CMD] invalid JSON");
+        return;
+    }
+
+    if (!doc["set_k_factor_1"].isNull()) {
+        sensorFlow_setKFactor(1, doc["set_k_factor_1"].as<float>());
+    }
+    if (!doc["set_k_factor_2"].isNull()) {
+        sensorFlow_setKFactor(2, doc["set_k_factor_2"].as<float>());
+    }
+    if (doc["restart_wifi"] | false) {
+        storeSd_logEvent("[CMD] restart_wifi received");
+        netWifi_reconnect();
+    }
+}
+
+static const char* DATA_LOG_HEADER =
+    "ts,"
+    "flow_rate_1,flow_total_1,flow_today_1,"
+    "flow_rate_2,flow_total_2,flow_today_2,"
+    "leak";
+
+static void handleDataLog() {
+    static unsigned long lastDataLogMs = 0;
+    unsigned long now = millis();
+    if (now - lastDataLogMs < DATA_LOG_INTERVAL_MS) {
+        return;
+    }
+    lastDataLogMs = now;
+
+    char row[128];
+    snprintf(row, sizeof(row),
+        "%lu,"
+        "%.3f,%.3f,%.3f,"
+        "%.3f,%.3f,%.3f,"
+        "%d",
+        (unsigned long)timeRtc_getUnixTime(),
+        sensorFlow_getRateLpm(1), sensorFlow_getTotalL(1), sensorFlow_getTodayL(1),
+        sensorFlow_getRateLpm(2), sensorFlow_getTotalL(2), sensorFlow_getTodayL(2),
+        sensorLeak_isWet() ? 1 : 0);
+
+    storeSd_logDataRow(row, DATA_LOG_HEADER);
+}
+
 static void updateM0Led() {
     if (sensorLeak_isWet()) {
         statusLed_setState(LedState::LEAK_DETECTED);
@@ -236,6 +514,7 @@ void setup() {
     statusLed_begin();
     statusLed_setState(LedState::BOOTING);
 
+    pinMode(PIN_RESET_CREDS, INPUT_PULLUP);
     Wire.setPins(PIN_I2C_SDA, PIN_I2C_SCL);
 
     storeSd_begin();
@@ -250,6 +529,7 @@ void setup() {
     netWifi_begin();
     watchdog_begin();
     netMqtt_begin();
+    netMqtt_setCmdCallback(handleCmd);
 
     Serial.print("[LEAK] initial state: ");
     Serial.println(leakStateText());
@@ -278,5 +558,7 @@ void loop() {
 
     handleLeakTransition();
     handleHeartbeat();
+    handleDataLog();
+    handleResetCredsButton();
     updateM0Led();
 }

@@ -103,6 +103,11 @@ bool netWifi_isConnected() {
     return (WiFi.status() == WL_CONNECTED);
 }
 
+void netWifi_reconnect() {
+    Serial.println("[WiFi] reconnect requested");
+    WiFi.disconnect(false);  // drop connection, keep credentials — netWifi_loop() will reconnect
+}
+
 void netWifi_resetCredentials() {
     Serial.println("[WiFi] clearing credentials and rebooting");
     wifiManager.resetSettings();

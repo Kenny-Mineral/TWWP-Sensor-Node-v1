@@ -10,9 +10,9 @@
 #define PIN_SD_CS       14
 #define PIN_STATUS_LED  48   // WS2812 onboard RGB
 
-// M1 — Hall flow sensors (stub for now)
-#define PIN_FLOW_1       4
-#define PIN_FLOW_2       5
+// M1 — Hall flow sensors
+#define PIN_FLOW_1       4   // USN-HS06PE/PS signal, INPUT_PULLUP, interrupt FALLING
+#define PIN_FLOW_2       5   // USN-HS06PE/PS signal, INPUT_PULLUP, interrupt FALLING
 
 // M2 — Pressure + temp (stub)
 #define PIN_PRESSURE     7   // Analog ADC, 0–5V via 2:1 divider → 0–2.5V

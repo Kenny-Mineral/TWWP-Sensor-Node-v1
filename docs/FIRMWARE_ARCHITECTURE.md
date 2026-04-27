@@ -93,15 +93,15 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `net_wifi.{h,cpp}` | WiFiManager + reconnect + credential reset |
 | `net_mqtt.{h,cpp}` | MQTT/TLS client + HA discovery + SD offline buffer |
 | `time_rtc.{h,cpp}` | DS3231 + NTP sync + drift correction |
-| `store_sd.{h,cpp}` | SD CSV daily logs + FIFO ring-buffer queue |
+| `store_sd.{h,cpp}` | SD event log + time-series data log + FIFO ring-buffer queue + JSON file helpers |
 | `watchdog.{h,cpp}` | Hardware WDT + crash log |
 | `status_led.{h,cpp}` | WS2812 RGB via FastLED |
-| `sensor_leak.{h,cpp}` | MH-RD digital/analog |
-| `sensor_flow.{h,cpp}` | Hall pulse counter + K-factor + daily total |
-| `sensor_pressure.{h,cpp}` | Analog ADC + voltage divider |
-| `sensor_temp.{h,cpp}` | DS18B20 1-Wire |
-| `sensor_yieryi.{h,cpp}` | YiErYi 3788 Modbus RTU (M5) |
-| `actuator_solenoid.{h,cpp}` | N-MOSFET gate driver (M3) |
+| `sensor_leak.{h,cpp}` | MH-RD digital — LOW = wet, logs event on state change |
+| `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel |
+| `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
+| `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
+| `sensor_yieryi.{h,cpp}` | Stub — YiErYi 3788 Modbus RTU via RS485 UART1 (M5, blocked on hardware debug) |
+| `actuator_solenoid.{h,cpp}` | Stub — N-MOSFET gate driver (M3, actuator not yet purchased) |
 
 ---
 
@@ -172,54 +172,83 @@ void loop() {
 ```
 /
 ├── log/
-│   ├── YYYY-MM-DD.csv     ← daily sensor log, rotated at RTC midnight
-│   └── crashes.txt        ← watchdog + exception crash log
+│   ├── YYYY-MM-DD.csv     ← event log: leak state changes, boot events, warnings
+│   └── crashes.txt        ← watchdog resets + buffer overflow records
+├── data/
+│   └── YYYY-MM-DD.csv     ← time-series: all sensor readings, one row per 60 s
 ├── buf/
-│   └── <seq>.json         ← unsent MQTT messages, drained FIFO on reconnect
+│   └── 0000000001.json    ← unsent MQTT messages, drained FIFO on reconnect
 └── config/
-    └── node.json          ← K-factor, thresholds, calibration, sensor intervals
+    ├── node.json          ← K-factor, SD retention, calibration, thresholds
+    └── flow_total.json    ← persisted flow totals + subtotals + date (SD layer)
 ```
 
-`node.json` example:
+`node.json` current schema:
 ```json
 {
-  "node_id": "wh_001",
-  "sensor_interval_ms": 5000,
   "sd": {
     "serial_commands_enabled": true,
     "retention_days": 365,
     "auto_prune": false
   },
-  "flow": { "k_factor": 450 },
-  "pressure": { "offset": 0.0, "scale": 1.0 },
-  "calibration": {
-    "flow1": { "pulses_per_liter": 450 },
-    "pressure": { "offset": 0.2, "scale": 1.1 }
-  },
-  "health_thresholds": {
-    "min_voltage": 4.5,
-    "max_flow": 50.0,
-    "min_pressure": 0.0,
-    "max_pressure": 700.0
+  "flow": {
+    "k_factor_1": 38,
+    "k_factor_2": 38
   }
 }
 ```
+
+`data/YYYY-MM-DD.csv` column header (current — columns added as sensors come online):
+```
+ts,flow_rate_1,flow_total_1,flow_today_1,flow_rate_2,flow_total_2,flow_today_2,leak
+```
+
+---
+
+## Data persistence layers
+
+Every piece of state that must survive a reboot uses a layered strategy. The rule is: **write locally first, publish to MQTT second. Never rely on MQTT being available to preserve data.**
+
+| Layer | What | How often | Survives |
+|---|---|---|---|
+| RAM | All live sensor values, rates, subtotals | Continuous | Normal operation only — lost on power cut |
+| NVS (ESP32 flash) | `flow_total_1`, `flow_total_2` | Every 10 s if changed | Power loss — at most 10 s gap |
+| SD `/config/flow_total.json` | Flow totals + period subtotals + current date | Every 60 s if changed | Full power loss including NVS corruption; also carries subtotals NVS cannot |
+| SD `/data/YYYY-MM-DD.csv` | All sensor readings snapshot | Every 60 s | Permanent offline record for time-series analysis |
+| SD `/log/YYYY-MM-DD.csv` | State-change events (leak, reboot, errors) | On event | Permanent audit trail |
+| SD `/buf/<seq>.json` | MQTT messages that failed to send | On every publish attempt | Replayed FIFO to broker when connectivity returns |
+
+**Boot restore order for flow totals:**
+1. Load SD `flow_total.json` — gives totals, subtotals, and date
+2. Overlay NVS totals if larger — NVS saves more frequently so is likely more recent
+3. Subtotals are restored only if the saved date matches today; otherwise reset to zero
+
+**Adding a new sensor** — follow this pattern:
+- Store live value in RAM (driver static)
+- Persist critical accumulators to NVS (Preferences namespace per driver)
+- Persist full state to SD config JSON every 60 s
+- Append reading to `/data/` CSV on each 60 s data log tick (add column to header)
+- Publish via MQTT heartbeat and HA discovery on connect
 
 ---
 
 ## MQTT topics
 
+Full topic list with QoS, retain flags, and HA discovery topics: see `docs/MQTT_TOPIC_MAP.md`.
+
+Summary:
+
 | Topic | Direction | Content |
 |---|---|---|
-| `twwp/<id>/status` | node → broker | Telemetry snapshot (10s) |
-| `twwp/<id>/alert` | node → broker | Alert state changes |
-| `twwp/<id>/log` | node → broker | SD errors, warnings |
-| `twwp/<id>/lwt` | node → broker | Last will: `offline` |
-| `twwp/<id>/cmd` | broker → node | solenoid, calibration, decommission, OTA |
-| `twwp/register` | node → broker | First-connect registration |
-| `homeassistant/...` | node → broker | MQTT discovery configs |
+| `twwp/<id>/status` | node → broker | All sensor readings + network info, every 10 s, retained |
+| `twwp/<id>/alert` | node → broker | State-change events (leak, etc.) |
+| `twwp/<id>/log` | node → broker | SD write failures, rate-limited 1/min |
+| `twwp/<id>/lwt` | node → broker | `online` / `offline`, retained |
+| `twwp/<id>/cmd` | broker → node | Command channel (actuator M3, OTA M4) |
+| `twwp/register` | node → broker | First-connect registration (M8) |
+| `homeassistant/...` | node → broker | HA auto-discovery configs, retained |
 
-All topics: port 8883 TLS only.
+All topics: port 8883 TLS only. Never plain 1883.
 
 ---
 
@@ -243,7 +272,7 @@ All topics: port 8883 TLS only.
 | MQTT unreachable | Buffer to SD `/buf/`. Drain FIFO on reconnect. |
 | SD fails | Set flag. Publish `"sd write failed"` to `twwp/<id>/log` (rate-limited). Continue degraded. |
 | Sensor garbage | HealthService marks `_ok = false`. AlertService fires `SENSOR_FAILURE`. |
-| Power cut mid-write | Sequential filenames — partial writes skipped on replay. |
+| Power cut mid-write | Sequential filenames — partial writes skipped on replay. Flow totals recovered from NVS (≤10 s gap) then SD backup. |
 | Loop stall | Hardware watchdog reboots after 30s. Reason written to `/log/crashes.txt`. |
 | TLS failure | Log SSL error code. Retry with backoff. Never fall back to plain MQTT. |
 | Bad OTA | If boot crashes within 60s → rollback via `esp_ota_set_boot_partition`. |

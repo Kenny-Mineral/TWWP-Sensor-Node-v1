@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 bool storeSd_begin();
 void storeSd_loop();
@@ -11,3 +12,7 @@ bool storeSd_printFile(const char* path, Print& out);
 bool storeSd_removePath(const char* path, Print& out);
 bool storeSd_printInfo(Print& out);
 uint16_t storeSd_pruneLogs(Print& out);
+uint32_t storeSd_bufferCount();
+bool storeSd_readJsonFile(const char* path, JsonDocument& doc);
+bool storeSd_writeJsonFile(const char* path, JsonDocument& doc);
+bool storeSd_logDataRow(const char* row, const char* header);

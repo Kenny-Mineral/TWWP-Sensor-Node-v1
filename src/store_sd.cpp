@@ -20,6 +20,18 @@ static uint32_t nextBufferSeq = 0;
 static uint16_t sdRetentionDays = 0;
 static bool sdAutoPrune = false;
 static bool sdSerialCommandsEnabled = true;
+static unsigned long lastSdFailureReportMs = 0;
+
+static void reportSdFailure(const char* context) {
+    unsigned long now = millis();
+    if (now - lastSdFailureReportMs < 60000UL) {
+        return;
+    }
+    lastSdFailureReportMs = now;
+    char msg[80];
+    snprintf(msg, sizeof(msg), "sd write failed: %s", context);
+    netMqtt_publish(TOPIC_LOG, msg, false);
+}
 
 static bool parseLogDateFromName(const char* name, int& year, int& month, int& day) {
     if (strlen(name) != 14 || strcmp(name + 10, ".csv") != 0) {
@@ -199,6 +211,12 @@ bool storeSd_begin() {
         return false;
     }
 
+    if (!sd.exists(SD_DATA_DIR) && !sd.mkdir(SD_DATA_DIR)) {
+        Serial.println("[SD] failed to create data dir");
+        sdReady = false;
+        return false;
+    }
+
     if (!sd.exists("/config") && !sd.mkdir("/config")) {
         Serial.println("[SD] failed to create config dir");
     }
@@ -225,6 +243,7 @@ bool storeSd_logEvent(const char* msg) {
     String path = String(SD_LOG_DIR) + "/" + timeRtc_getDateString() + ".csv";
     FsFile file;
     if (!file.open(path.c_str(), FILE_WRITE)) {
+        reportSdFailure("log");
         return false;
     }
 
@@ -250,6 +269,15 @@ bool storeSd_bufferMessage(const char* topic, const char* payload) {
         if (!sd.remove(oldestPath)) {
             break;
         }
+
+        FsFile crashLog;
+        if (crashLog.open(SD_CRASH_LOG, FILE_WRITE)) {
+            crashLog.print(timeRtc_getUnixTime());
+            crashLog.print(",buffer overflow: dropped ");
+            crashLog.println(oldestPath);
+            crashLog.close();
+        }
+
         if (count > 0) {
             --count;
         } else {
@@ -267,12 +295,14 @@ bool storeSd_bufferMessage(const char* topic, const char* payload) {
 
     FsFile file;
     if (!file.open(path, FILE_WRITE)) {
+        reportSdFailure("buffer");
         return false;
     }
 
     if (serializeJson(doc, file) == 0) {
         file.close();
         sd.remove(path);
+        reportSdFailure("buffer-write");
         return false;
     }
 
@@ -431,7 +461,8 @@ bool storeSd_removePath(const char* path, Print& out) {
         return false;
     }
     if (strcmp(path, "/") == 0 || strcmp(path, SD_LOG_DIR) == 0 ||
-        strcmp(path, SD_BUF_DIR) == 0 || strcmp(path, "/config") == 0) {
+        strcmp(path, SD_BUF_DIR) == 0 || strcmp(path, SD_DATA_DIR) == 0 ||
+        strcmp(path, "/config") == 0) {
         out.print("[SD] refusing to remove protected path: ");
         out.println(path);
         return false;
@@ -491,43 +522,102 @@ uint16_t storeSd_pruneLogs(Print& out) {
 
     int32_t currentDay = static_cast<int32_t>(nowUnix / 86400UL);
     uint16_t removed = 0;
-    FsFile dir;
-    FsFile entry;
-    char name[64];
 
-    if (!dir.open(SD_LOG_DIR, O_RDONLY) || !dir.isDir()) {
-        out.println("[SD] retention skipped: log dir missing");
-        return 0;
-    }
+    const char* pruneDirs[] = { SD_LOG_DIR, SD_DATA_DIR };
+    for (uint8_t d = 0; d < 2; ++d) {
+        FsFile dir;
+        FsFile entry;
+        char name[64];
 
-    dir.rewind();
-    while (entry.openNext(&dir, O_RDONLY)) {
-        if (!entry.isDir() && entry.getName(name, sizeof(name)) > 0) {
-            int year = 0;
-            int month = 0;
-            int day = 0;
-            if (parseLogDateFromName(name, year, month, day)) {
-                int32_t fileDay = daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
-                if (currentDay - fileDay > static_cast<int32_t>(sdRetentionDays)) {
-                    char path[96];
-                    snprintf(path, sizeof(path), "%s/%s", SD_LOG_DIR, name);
-                    entry.close();
-                    if (sd.remove(path)) {
-                        ++removed;
-                        out.print("[SD] pruned ");
-                        out.println(path);
+        if (!dir.open(pruneDirs[d], O_RDONLY) || !dir.isDir()) {
+            continue;
+        }
+
+        dir.rewind();
+        while (entry.openNext(&dir, O_RDONLY)) {
+            if (!entry.isDir() && entry.getName(name, sizeof(name)) > 0) {
+                int year = 0;
+                int month = 0;
+                int day = 0;
+                if (parseLogDateFromName(name, year, month, day)) {
+                    int32_t fileDay = daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
+                    if (currentDay - fileDay > static_cast<int32_t>(sdRetentionDays)) {
+                        char path[96];
+                        snprintf(path, sizeof(path), "%s/%s", pruneDirs[d], name);
+                        entry.close();
+                        if (sd.remove(path)) {
+                            ++removed;
+                            out.print("[SD] pruned ");
+                            out.println(path);
+                        }
+                        delay(0);
+                        continue;
                     }
-                    delay(0);
-                    continue;
                 }
             }
+            entry.close();
+            delay(0);
         }
-        entry.close();
-        delay(0);
+
+        dir.close();
     }
 
-    dir.close();
     out.print("[SD] prune complete, removed ");
     out.println(removed);
     return removed;
+}
+
+uint32_t storeSd_bufferCount() {
+    if (!sdReady) {
+        return 0;
+    }
+    return countBufferFilesAndMaxSeq();
+}
+
+bool storeSd_logDataRow(const char* row, const char* header) {
+    if (!sdReady) {
+        return false;
+    }
+
+    String path = String(SD_DATA_DIR) + "/" + timeRtc_getDateString() + ".csv";
+    bool isNew = !sd.exists(path.c_str());
+
+    FsFile file;
+    if (!file.open(path.c_str(), FILE_WRITE)) {
+        reportSdFailure("data");
+        return false;
+    }
+
+    if (isNew && header && header[0]) {
+        file.println(header);
+    }
+    file.println(row);
+    file.close();
+    return true;
+}
+
+bool storeSd_readJsonFile(const char* path, JsonDocument& doc) {
+    if (!sdReady) {
+        return false;
+    }
+    FsFile file;
+    if (!file.open(path, O_RDONLY)) {
+        return false;
+    }
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+    return !err;
+}
+
+bool storeSd_writeJsonFile(const char* path, JsonDocument& doc) {
+    if (!sdReady) {
+        return false;
+    }
+    FsFile file;
+    if (!file.open(path, O_WRONLY | O_CREAT | O_TRUNC)) {
+        return false;
+    }
+    bool ok = serializeJson(doc, file) > 0;
+    file.close();
+    return ok;
 }

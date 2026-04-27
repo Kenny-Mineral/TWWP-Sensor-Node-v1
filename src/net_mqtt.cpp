@@ -12,6 +12,8 @@
 static WiFiClientSecure secureClient;
 static PubSubClient mqttClient(secureClient);
 
+static MqttCmdCallback mqttCmdCallback = nullptr;
+
 static unsigned long mqtt_lastAttempt = 0;
 static unsigned long mqtt_backoffMs = 1000; // start 1s
 static const unsigned long mqtt_backoffMaxMs = 60000; // max 60s
@@ -34,9 +36,8 @@ static bool mqttConnect(const String& clientId) {
 }
 
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    // Log received command to Serial and SD
     char msg[256];
-    size_t toCopy = (length < sizeof(msg)-1) ? length : sizeof(msg)-1;
+    size_t toCopy = (length < sizeof(msg) - 1) ? length : sizeof(msg) - 1;
     memcpy(msg, payload, toCopy);
     msg[toCopy] = '\0';
 
@@ -48,6 +49,10 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     char logbuf[300];
     snprintf(logbuf, sizeof(logbuf), "[MQTT] recv %s %s", topic, msg);
     storeSd_logEvent(logbuf);
+
+    if (strcmp(topic, TOPIC_CMD) == 0 && mqttCmdCallback) {
+        mqttCmdCallback(msg);
+    }
 }
 
 bool netMqtt_begin() {
@@ -134,6 +139,10 @@ bool netMqtt_publish(const char* topic, const char* payload, bool retain) {
         Serial.println(topic);
     }
     return ok;
+}
+
+void netMqtt_setCmdCallback(MqttCmdCallback cb) {
+    mqttCmdCallback = cb;
 }
 
 void netMqtt_publishSub(const char* topic, const char* payload) {

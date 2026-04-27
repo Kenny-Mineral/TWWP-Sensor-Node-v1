@@ -19,5 +19,11 @@
 #define SD_MAX_BUFFER_LINES         500
 #define SD_LOG_DIR                  "/log"
 #define SD_BUF_DIR                  "/buf"
+#define SD_DATA_DIR                 "/data"
 #define SD_CONFIG_PATH              "/config/node.json"
 #define SD_CRASH_LOG                "/log/crashes.txt"
+#define SD_FLOW_TOTAL_PATH          "/config/flow_total.json"
+
+// Data logging
+#define DATA_LOG_INTERVAL_MS        60000UL   // time-series CSV snapshot interval
+#define NVS_FLOW_SAVE_INTERVAL_MS   10000UL   // NVS flow total save interval

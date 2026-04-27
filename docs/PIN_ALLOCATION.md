@@ -1,6 +1,6 @@
 # Pin Allocation — Waveshare ESP32-S3-RS485-CAN
 
-**Last updated:** 2026-04-19
+**Last updated:** 2026-04-27
 **Version:** v3 — confirmed against SpotPear/Waveshare pinout image and Waveshare demo source code.
 **Source of truth in code:** `include/pins.h`. Update both together — never one alone.
 
@@ -67,8 +67,8 @@
 
 | Function | GPIO | Dir | Pull | ADC? | VCC | Notes |
 |---|---|---|---|---|---|---|
-| **Flow #1 pulse** | 4 | INPUT | PULLUP | — | 5V | attachInterrupt FALLING |
-| **Flow #2 pulse** | 5 | INPUT | PULLUP | — | 5V | Same |
+| **Flow #1 pulse** | 4 | INPUT | PULLUP | — | 5V | USN-HS06PE/PS, attachInterrupt FALLING — confirmed M1 |
+| **Flow #2 pulse** | 5 | INPUT | PULLUP | — | 5V | USN-HS06PE/PS, attachInterrupt FALLING — confirmed M1 |
 | **Leak DO** | 6 | INPUT | PULLUP | — | 3V3 | MH-RD comparator out, LOW = wet |
 | **Pressure ADC** | 7 | INPUT | — | ADC1_CH6 | 5V | 0–5V → 2:1 divider → 0–2.5V |
 | **Solenoid gate** | 8 | OUTPUT | — | — | — | → MOSFET gate; 100Ω series, 10kΩ pull-down |
