@@ -107,7 +107,7 @@ static void serviceSerialConsole() {
         Serial.println("[SERIAL] console connected");
         Serial.print("[SERIAL] leak state: ");
         Serial.println(leakStateText());
-        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
+        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune, reset_flow_today[_1/_2], reset_flow_totals[_1/_2]");
     }
 
     wasConnected = connected;
@@ -144,7 +144,21 @@ static void serviceSerialConsole() {
                 } else if (strcmp(cmd, "sdprune") == 0) {
                     storeSd_pruneLogs(Serial);
                 } else if (strcmp(cmd, "help") == 0) {
-                    Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
+                    Serial.println("[SERIAL] SD commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
+                    Serial.println("[SERIAL] Flow reset: reset_flow_today, reset_flow_today_1, reset_flow_today_2");
+                    Serial.println("[SERIAL]             reset_flow_totals, reset_flow_totals_1, reset_flow_totals_2");
+                } else if (strcmp(cmd, "reset_flow_today") == 0) {
+                    sensorFlow_resetToday(0);
+                } else if (strcmp(cmd, "reset_flow_today_1") == 0) {
+                    sensorFlow_resetToday(1);
+                } else if (strcmp(cmd, "reset_flow_today_2") == 0) {
+                    sensorFlow_resetToday(2);
+                } else if (strcmp(cmd, "reset_flow_totals") == 0) {
+                    sensorFlow_resetTotals(0);
+                } else if (strcmp(cmd, "reset_flow_totals_1") == 0) {
+                    sensorFlow_resetTotals(1);
+                } else if (strcmp(cmd, "reset_flow_totals_2") == 0) {
+                    sensorFlow_resetTotals(2);
                 } else {
                     Serial.print("[SERIAL] unknown command: ");
                     Serial.println(cmd);
@@ -401,6 +415,60 @@ static bool publishHaDiscoverySession() {
     return ok;
 }
 
+static bool publishHaDiscoveryResetButtons() {
+    bool ok = true;
+
+    auto pubButton = [&ok](const char* uid, const char* name, const char* payload_press,
+                            const char* subId, const char* subName) {
+        JsonDocument doc;
+        doc["name"]              = name;
+        doc["unique_id"]         = uid;
+        doc["object_id"]         = uid;
+        doc["entity_category"]   = "config";
+        doc["command_topic"]     = TOPIC_CMD;
+        doc["payload_press"]     = payload_press;
+        doc["availability_topic"]  = TOPIC_LWT;
+        doc["payload_available"]   = "online";
+        doc["payload_not_available"] = "offline";
+        if (subId && subId[0]) {
+            fillHaSubDevice(doc, subId, subName);
+        } else {
+            fillHaDevice(doc);
+        }
+        char payload[512];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/button/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    // Per-channel reset today — on sub-device cards
+    pubButton("twwp_" NODE_ID "_reset_today_1", "Reset Today",
+              "{\"reset_flow_today_1\": true}",
+              "twwp_" NODE_ID "_flow1", "RO Output");
+    pubButton("twwp_" NODE_ID "_reset_today_2", "Reset Today",
+              "{\"reset_flow_today_2\": true}",
+              "twwp_" NODE_ID "_flow2", "RO Input");
+
+    // Per-channel reset totals — on sub-device cards
+    pubButton("twwp_" NODE_ID "_reset_totals_1", "Reset Totals",
+              "{\"reset_flow_totals_1\": true}",
+              "twwp_" NODE_ID "_flow1", "RO Output");
+    pubButton("twwp_" NODE_ID "_reset_totals_2", "Reset Totals",
+              "{\"reset_flow_totals_2\": true}",
+              "twwp_" NODE_ID "_flow2", "RO Input");
+
+    // Both-channel resets — on main node card
+    pubButton("twwp_" NODE_ID "_reset_today_all",  "Reset Today (Both)",
+              "{\"reset_flow_today\": true}", nullptr, nullptr);
+    pubButton("twwp_" NODE_ID "_reset_totals_all", "Reset Totals (Both)",
+              "{\"reset_flow_totals\": true}", nullptr, nullptr);
+
+    Serial.print("[MQTT] HA reset button discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static bool publishHaDiscoveryDiagnostics() {
     bool ok = true;
 
@@ -467,6 +535,8 @@ static void publishOnlineState() {
     publishHaDiscovery();
     publishHaDiscoveryFlow();
     publishHaDiscoveryDiagnostics();
+    publishHaDiscoverySession();
+    publishHaDiscoveryResetButtons();
     publishM0Status(true, false);
     lastHeartbeatMs = millis();
 }
@@ -530,6 +600,12 @@ static void handleCmd(const char* payload) {
         storeSd_logEvent("[CMD] restart_wifi received");
         netWifi_reconnect();
     }
+    if (doc["reset_flow_today_1"] | false) sensorFlow_resetToday(1);
+    if (doc["reset_flow_today_2"] | false) sensorFlow_resetToday(2);
+    if (doc["reset_flow_today"]   | false) sensorFlow_resetToday(0);
+    if (doc["reset_flow_totals_1"] | false) sensorFlow_resetTotals(1);
+    if (doc["reset_flow_totals_2"] | false) sensorFlow_resetTotals(2);
+    if (doc["reset_flow_totals"]   | false) sensorFlow_resetTotals(0);
 }
 
 static const char* DATA_LOG_HEADER =
@@ -586,6 +662,7 @@ void setup() {
 
     sensorLeak_begin();
     sensorFlow_begin();
+    sessionFlow_begin();
     sensorPressure_begin();
     sensorTemp_begin();
     actuatorSolenoid_begin();
@@ -609,6 +686,7 @@ void loop() {
 
     sensorLeak_loop();
     sensorFlow_loop();
+    sessionFlow_loop();
     sensorPressure_loop();
     sensorTemp_loop();
     actuatorSolenoid_loop();
