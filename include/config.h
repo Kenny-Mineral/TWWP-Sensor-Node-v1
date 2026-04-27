@@ -27,3 +27,9 @@
 // Data logging
 #define DATA_LOG_INTERVAL_MS        60000UL   // time-series CSV snapshot interval
 #define NVS_FLOW_SAVE_INTERVAL_MS   10000UL   // NVS flow total save interval
+
+// Session tracking
+#define TOPIC_SESSION               "twwp/" NODE_ID "/session"
+#define SD_SESSION_LOG_PATH         "/log/sessions.csv"
+#define SESSION_IDLE_TIMEOUT_MS     90000UL
+#define FLOW_ACTIVE_THRESHOLD_LPM   0.05f

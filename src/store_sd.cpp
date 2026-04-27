@@ -596,6 +596,22 @@ bool storeSd_logDataRow(const char* row, const char* header) {
     return true;
 }
 
+bool storeSd_appendCsvRow(const char* path, const char* row, const char* header) {
+    if (!sdReady) return false;
+    bool isNew = !sd.exists(path);
+    FsFile file;
+    if (!file.open(path, FILE_WRITE)) {
+        reportSdFailure("session");
+        return false;
+    }
+    if (isNew && header && header[0]) {
+        file.println(header);
+    }
+    file.println(row);
+    file.close();
+    return true;
+}
+
 bool storeSd_readJsonFile(const char* path, JsonDocument& doc) {
     if (!sdReady) {
         return false;

@@ -16,3 +16,4 @@ uint32_t storeSd_bufferCount();
 bool storeSd_readJsonFile(const char* path, JsonDocument& doc);
 bool storeSd_writeJsonFile(const char* path, JsonDocument& doc);
 bool storeSd_logDataRow(const char* row, const char* header);
+bool storeSd_appendCsvRow(const char* path, const char* row, const char* header);
