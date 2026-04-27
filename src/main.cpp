@@ -184,9 +184,21 @@ static void fillHaDevice(JsonDocument& doc) {
     device["sw_version"] = NODE_FIRMWARE_VERSION;
 }
 
+static void fillHaSubDevice(JsonDocument& doc, const char* subId, const char* subName) {
+    JsonObject device = doc["device"].to<JsonObject>();
+    JsonArray identifiers = device["identifiers"].to<JsonArray>();
+    identifiers.add(subId);
+    device["name"]         = subName;
+    device["manufacturer"] = "TWWP";
+    device["model"]        = "Waveshare ESP32-S3 RS485 CAN";
+    device["sw_version"]   = NODE_FIRMWARE_VERSION;
+    device["via_device"]   = "twwp_" NODE_ID;
+}
+
 static bool publishHaFlowSensor(const char* uid, const char* name, const char* valueKey,
                                  const char* unit, const char* deviceClass,
-                                 const char* stateClass) {
+                                 const char* stateClass,
+                                 const char* subId, const char* subName) {
     JsonDocument doc;
     doc["name"]       = name;
     doc["unique_id"]  = uid;
@@ -203,7 +215,7 @@ static bool publishHaFlowSensor(const char* uid, const char* name, const char* v
     doc["availability_topic"]   = TOPIC_LWT;
     doc["payload_available"]    = "online";
     doc["payload_not_available"] = "offline";
-    fillHaDevice(doc);
+    fillHaSubDevice(doc, subId, subName);
 
     char payload[768];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
@@ -217,26 +229,31 @@ static bool publishHaFlowSensor(const char* uid, const char* name, const char* v
 
 static bool publishHaDiscoveryFlow() {
     bool ok = true;
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_1",  "TWWP " NODE_ID " Flow Rate 1",  "flow_rate_1",  "L/min", "volume_flow_rate", "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_2",  "TWWP " NODE_ID " Flow Rate 2",  "flow_rate_2",  "L/min", "volume_flow_rate", "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_1", "TWWP " NODE_ID " Flow Total 1", "flow_total_1", "L",     "water",             "total_increasing");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_2", "TWWP " NODE_ID " Flow Total 2", "flow_total_2", "L",     "water",             "total_increasing");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_1", "TWWP " NODE_ID " Flow Today 1", "flow_today_1", "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_2", "TWWP " NODE_ID " Flow Today 2", "flow_today_2", "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_1",  "TWWP " NODE_ID " Flow Week 1",  "flow_week_1",  "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_2",  "TWWP " NODE_ID " Flow Week 2",  "flow_week_2",  "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_1", "TWWP " NODE_ID " Flow Month 1", "flow_month_1", "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_2", "TWWP " NODE_ID " Flow Month 2", "flow_month_2", "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_1",  "TWWP " NODE_ID " Flow Year 1",  "flow_year_1",  "L",     "",                  "measurement");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_2",  "TWWP " NODE_ID " Flow Year 2",  "flow_year_2",  "L",     "",                  "measurement");
-    // K factor entities are writable number entities, not read-only sensors.
-    // Clear any previously published sensor entities for K factors.
+
+    // Channel 1 — RO Output
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_1",  "Flow Rate",   "flow_rate_1",  "L/min", "volume_flow_rate", "measurement",    "twwp_" NODE_ID "_flow1", "RO Output");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_1", "Flow Total",  "flow_total_1", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow1", "RO Output");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_1", "Flow Today",  "flow_today_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_1",  "Flow Week",   "flow_week_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_1", "Flow Month",  "flow_month_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_1",  "Flow Year",   "flow_year_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output");
+
+    // Channel 2 — RO Input
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_2",  "Flow Rate",   "flow_rate_2",  "L/min", "volume_flow_rate", "measurement",    "twwp_" NODE_ID "_flow2", "RO Input");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_2", "Flow Total",  "flow_total_2", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow2", "RO Input");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_2", "Flow Today",  "flow_today_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_2",  "Flow Week",   "flow_week_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_2", "Flow Month",  "flow_month_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_2",  "Flow Year",   "flow_year_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input");
+
+    // Clear any old sensor discovery entries for K factors (published before number entities existed)
     netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_1/config", "", true);
     netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_2/config", "", true);
 
-    // Publish writable number entities for K factors
+    // K factor writable number entities
     auto publishKFactorNumber = [&ok](const char* uid, const char* name,
-                                       const char* valueKey, const char* cmdKey) {
+                                      const char* valueKey, const char* cmdKey,
+                                      const char* subId, const char* subName) {
         JsonDocument doc;
         doc["name"]       = name;
         doc["unique_id"]  = uid;
@@ -254,10 +271,11 @@ static bool publishHaDiscoveryFlow() {
         doc["max"]                 = 9999;
         doc["step"]                = 1;
         doc["mode"]                = "box";
+        doc["entity_category"]     = "config";
         doc["availability_topic"]   = TOPIC_LWT;
         doc["payload_available"]    = "online";
         doc["payload_not_available"] = "offline";
-        fillHaDevice(doc);
+        fillHaSubDevice(doc, subId, subName);
 
         char payload[768];
         if (!serializeDoc(doc, payload, sizeof(payload))) {
@@ -270,10 +288,12 @@ static bool publishHaDiscoveryFlow() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    publishKFactorNumber("twwp_" NODE_ID "_k_factor_1", "TWWP " NODE_ID " K Factor 1",
-                         "k_factor_1", "set_k_factor_1");
-    publishKFactorNumber("twwp_" NODE_ID "_k_factor_2", "TWWP " NODE_ID " K Factor 2",
-                         "k_factor_2", "set_k_factor_2");
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_1", "K Factor",
+                         "k_factor_1", "set_k_factor_1",
+                         "twwp_" NODE_ID "_flow1", "RO Output");
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_2", "K Factor",
+                         "k_factor_2", "set_k_factor_2",
+                         "twwp_" NODE_ID "_flow2", "RO Input");
 
     Serial.print("[MQTT] HA flow discovery ");
     Serial.println(ok ? "published" : "partial");
@@ -292,7 +312,7 @@ static bool publishHaDiscovery() {
     doc["payload_available"] = "online";
     doc["payload_not_available"] = "offline";
 
-    fillHaDevice(doc);
+    fillHaSubDevice(doc, "twwp_" NODE_ID "_leak", "Leak Sensor");
 
     char payload[768];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
