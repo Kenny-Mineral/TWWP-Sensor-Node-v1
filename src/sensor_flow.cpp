@@ -272,6 +272,47 @@ bool sensorFlow_setKFactor(uint8_t ch, float k) {
     return true;
 }
 
+void sensorFlow_resetToday(uint8_t ch) {
+    if (ch == 0 || ch == 1) {
+        flowToday1 = 0.0f; flowWeek1 = 0.0f; flowMonth1 = 0.0f; flowYear1 = 0.0f;
+    }
+    if (ch == 0 || ch == 2) {
+        flowToday2 = 0.0f; flowWeek2 = 0.0f; flowMonth2 = 0.0f; flowYear2 = 0.0f;
+    }
+    lastSdSavedTotal1 = -1.0f;  // force SD save on next interval
+    lastSdSavedTotal2 = -1.0f;
+    saveToSd();
+    char msg[48];
+    snprintf(msg, sizeof(msg), "[FLOW] reset today ch=%d", ch);
+    storeSd_logEvent(msg);
+    Serial.println(msg);
+}
+
+void sensorFlow_resetTotals(uint8_t ch) {
+    if (ch == 0 || ch == 1) {
+        flowTotal1 = 0.0f; flowToday1 = 0.0f; flowWeek1 = 0.0f;
+        flowMonth1 = 0.0f; flowYear1  = 0.0f;
+    }
+    if (ch == 0 || ch == 2) {
+        flowTotal2 = 0.0f; flowToday2 = 0.0f; flowWeek2 = 0.0f;
+        flowMonth2 = 0.0f; flowYear2  = 0.0f;
+    }
+    // Clear NVS for affected channels
+    prefs.begin("flow", false);
+    if (ch == 0 || ch == 1) prefs.putFloat("t1", 0.0f);
+    if (ch == 0 || ch == 2) prefs.putFloat("t2", 0.0f);
+    prefs.end();
+    lastNvsSavedTotal1 = 0.0f;
+    lastNvsSavedTotal2 = 0.0f;
+    lastSdSavedTotal1  = -1.0f;  // force SD save
+    lastSdSavedTotal2  = -1.0f;
+    saveToSd();
+    char msg[48];
+    snprintf(msg, sizeof(msg), "[FLOW] reset totals ch=%d", ch);
+    storeSd_logEvent(msg);
+    Serial.println(msg);
+}
+
 float sensorFlow_getRateLpm(uint8_t ch)  { return ch == 1 ? flowRate1  : flowRate2; }
 float sensorFlow_getTotalL(uint8_t ch)   { return ch == 1 ? flowTotal1 : flowTotal2; }
 float sensorFlow_getTodayL(uint8_t ch)   { return ch == 1 ? flowToday1 : flowToday2; }

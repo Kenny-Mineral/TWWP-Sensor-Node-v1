@@ -11,3 +11,5 @@ float sensorFlow_getMonthL(uint8_t ch);    // L since 1st of month
 float sensorFlow_getYearL(uint8_t ch);     // L since 1 Jan
 float sensorFlow_getKFactor(uint8_t ch);   // active K value (pulses/L)
 bool  sensorFlow_setKFactor(uint8_t ch, float k); // update K in RAM + save to node.json
+void  sensorFlow_resetToday(uint8_t ch);          // ch=1, ch=2, or ch=0 for both
+void  sensorFlow_resetTotals(uint8_t ch);         // ch=1, ch=2, or ch=0 for both — clears NVS too
