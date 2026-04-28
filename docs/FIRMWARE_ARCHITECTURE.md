@@ -98,6 +98,7 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `status_led.{h,cpp}` | WS2812 RGB via FastLED |
 | `sensor_leak.{h,cpp}` | MH-RD digital — LOW = wet, logs event on state change |
 | `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel |
+| `session_flow.{h,cpp}` | Tap session lifecycle — IDLE/ACTIVE/ENDING state machine, configurable idle timeout (NVS, 5–100 s) and flow threshold (NVS, 0.01–0.5 L/min), 10-session ring buffer with SD persistence, retained `sessions_recent` MQTT publish, leak-suspect detection |
 | `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
 | `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
 | `sensor_yieryi.{h,cpp}` | Stub — YiErYi 3788 Modbus RTU via RS485 UART1 (M5, blocked on hardware debug) |
@@ -173,14 +174,16 @@ void loop() {
 /
 ├── log/
 │   ├── YYYY-MM-DD.csv     ← event log: leak state changes, boot events, warnings
+│   ├── sessions.csv       ← per-session log: id, start_ts, end_ts, dur, vol, peak
 │   └── crashes.txt        ← watchdog resets + buffer overflow records
 ├── data/
 │   └── YYYY-MM-DD.csv     ← time-series: all sensor readings, one row per 60 s
 ├── buf/
 │   └── 0000000001.json    ← unsent MQTT messages, drained FIFO on reconnect
 └── config/
-    ├── node.json          ← K-factor, SD retention, calibration, thresholds
-    └── flow_total.json    ← persisted flow totals + subtotals + date (SD layer)
+    ├── node.json              ← K-factor, SD retention, calibration, thresholds
+    ├── flow_total.json        ← persisted flow totals + subtotals + date (SD layer)
+    └── sessions_recent.json   ← last 10 sessions ring buffer snapshot (restored on boot)
 ```
 
 `node.json` current schema:
@@ -244,7 +247,9 @@ Summary:
 | `twwp/<id>/alert` | node → broker | State-change events (leak, etc.) |
 | `twwp/<id>/log` | node → broker | SD write failures, rate-limited 1/min |
 | `twwp/<id>/lwt` | node → broker | `online` / `offline`, retained |
-| `twwp/<id>/cmd` | broker → node | Command channel (actuator M3, OTA M4) |
+| `twwp/<id>/session` | node → broker | Session-end event (not retained) — id, start/end ts, duration, volume, peak |
+| `twwp/<id>/sessions_recent` | node → broker | Retained JSON of last 10 sessions (newest-first). Republished on reconnect. |
+| `twwp/<id>/cmd` | broker → node | Command channel (actuator M3, OTA M4, session config) |
 | `twwp/register` | node → broker | First-connect registration (M8) |
 | `homeassistant/...` | node → broker | HA auto-discovery configs, retained |
 
