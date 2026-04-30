@@ -1,0 +1,51 @@
+# TWWP Tap Sessions Card
+#
+# Prerequisites:
+#   1. Install HACS: https://hacs.xyz/docs/use/download/download/
+#   2. In HA → HACS → Frontend → search "flex-table-card" → Install → Restart HA
+#
+# How to add this card to your dashboard:
+#   Dashboard → Edit → Add Card → Manual Card → paste contents below
+#
+# Entity IDs assume NODE_ID = wh_001. Adjust if yours differs.
+
+type: vertical-stack
+cards:
+
+  - type: custom:flex-table-card
+    title: Tap Sessions (last 10)
+    entities:
+      include: sensor.twwp_wh001_sessions_recent
+    columns:
+      - name: "#"
+        attr_as_list: sessions
+        modify: x.id
+      - name: Date
+        modify: >
+          new Date(x.start_ts * 1000).toLocaleDateString('en-AU',
+            {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+      - name: Duration
+        modify: >
+          x.dur_s >= 60
+            ? Math.floor(x.dur_s/60) + 'm ' + (x.dur_s % 60) + 's'
+            : x.dur_s + 's'
+      - name: Out (L)
+        modify: parseFloat(x.vol_out).toFixed(2)
+      - name: In (L)
+        modify: parseFloat(x.vol_in).toFixed(2)
+      - name: Peak Out
+        modify: parseFloat(x.peak_out).toFixed(1) + ' L/m'
+      - name: Peak In
+        modify: parseFloat(x.peak_in).toFixed(1) + ' L/m'
+    css:
+      table: "font-size: 0.85em;"
+
+  - type: entities
+    title: Session Settings
+    entities:
+      - entity: switch.twwp_wh001_session_enabled
+        name: Session Tracking
+      - entity: number.twwp_wh001_session_idle_timeout
+        name: Idle Timeout (s)
+      - entity: number.twwp_wh001_flow_threshold
+        name: Flow Threshold (L/min)

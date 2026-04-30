@@ -56,8 +56,8 @@ K value = pulses per litre. The active K value for each channel is loaded from `
 
 | Model | Flow Range | K Value (pulses/L) | Pipe fit | Notes | URL |
 |---|---|---|---|---|---|
-| **USN-HS06PE** | 0.3–6.0 LPM | 38 | 1/4" PE pipe | General purpose, wider range | https://www.aliexpress.com/item/1005006630839984.html |
-| **USN-HS06PS** | 0.1–1.0 LPM | 200 | 1/4" PE or PVC | Low-flow, 0.8 mm inner bore, high pressure drop | https://www.aliexpress.com/item/1005006630839984.html |
+| **USN-HS06PE** | 0.3–6.0 LPM | 5,500 | 1/4" PE pipe | RO output — general purpose, wider range | https://www.aliexpress.com/item/1005006630839984.html |
+| **USN-HS06PS** | 0.1–1.0 LPM | 20,700 | 1/4" PE or PVC | RO input — low-flow, 0.8 mm inner bore, high pressure drop | https://www.aliexpress.com/item/1005006630839984.html |
 
 > Add a row whenever a new sensor model is tested. The K value on the housing is a starting point — calibrate against a measured volume for best accuracy.
 
@@ -79,23 +79,43 @@ These are the values the firmware captures and publishes to HA, matching the Flo
 
 ### K-Value Config
 
-Set in `/config/node.json` on the SD card:
+Flow calibration and signal processing parameters are loaded from `/config/node.json` on the SD card at boot. No reflash needed to change sensors or runtime settings.
+
+Multi-point calibration example:
 
 ```json
 {
   "flow": {
-    "k_factor_1": 38,
-    "k_factor_2": 38
+    "k_factor_1": 5500,
+    "k_factor_2": 20700,
+    "k_table_1": [
+      {"flow_lpm": 0.42, "k": 4972},
+      {"flow_lpm": 0.99, "k": 5468},
+      {"flow_lpm": 1.42, "k": 5476}
+    ],
+    "k_table_2": [
+      {"flow_lpm": 0.42, "k": 21120},
+      {"flow_lpm": 0.99, "k": 20818},
+      {"flow_lpm": 1.38, "k": 21104}
+    ],
+    "debounce_us_1": 1000,
+    "debounce_us_2": 500,
+    "flow_avg_window": 5
   }
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `flow.k_factor_1` | 38 | K value for flow sensor on GPIO4 |
-| `flow.k_factor_2` | 38 | K value for flow sensor on GPIO5 |
+| `flow.k_factor_1` | 5500 | Nominal K for flow sensor 1 (RO Output, USN-HS06PE on GPIO4). Fallback if no K-table is configured. |
+| `flow.k_factor_2` | 20700 | Nominal K for flow sensor 2 (RO Input, USN-HS06PS on GPIO5). Fallback if no K-table is configured. |
+| `flow.k_table_1` | — | Optional ordered array of calibration points for channel 1 (lowest flow first). Overrides single K. |
+| `flow.k_table_2` | — | Optional ordered array of calibration points for channel 2 (lowest flow first). Overrides single K. |
+| `flow.debounce_us_1` | 1000 | ISR debounce for channel 1 (µs). Range 100–10000. Default 1000 is safe to ~10.9 L/min. |
+| `flow.debounce_us_2` | 500 | ISR debounce for channel 2 (µs). Range 100–10000. Default 500 is safe to ~5.8 L/min. |
+| `flow.flow_avg_window` | 5 | Moving-average window size (samples, 1–20). Shared across both channels. |
 
-Swap to K=200 for USN-HS06PS by editing the SD card file — no reflash.
+> If a K-table is absent, the firmware uses the matching single `k_factor_*` as a 1-point table. Backward compatible with older `node.json` files that only have `k_factor_1` / `k_factor_2`.
 
 ### Wiring
 
@@ -107,6 +127,28 @@ Swap to K=200 for USN-HS06PS by editing the SD card file — no reflash.
 | Flow #2 signal | GPIO5 |
 | VCC | 5 V header |
 | GND | GND header |
+
+---
+
+### Calibration Data
+
+Calibration testing (from `flow_sensor_calibration_v105.xlsx`) revealed significant K-factor variation in the PE (output) sensor and good linearity in the PS (input) sensor:
+
+| Sensor | Channel | Nominal K | K at Low Flow | K at Med Flow | K at High Flow | Variation |
+|---|---|---|---|---|---|---|
+| USN-HS06PE (Output) | 1 (GPIO4) | ~5,500 | ~4,972 | ~5,468 | ~5,476 | **~10%** |
+| USN-HS06PS (Input) | 2 (GPIO5) | ~20,700 | ~21,120 | ~20,818 | ~21,105 | ~2% |
+
+**Key findings:**
+- The PE sensor shows ~10% K variation across its flow range — a single fixed K causes systematic error, hence the multi-point K-table with linear interpolation.
+- The PS sensor is relatively linear (~2% variation) — a single K works well but a K-table provides additional precision.
+- The firmware defaults (`k_factor_1` = 5,500, `k_factor_2` = 20,700) are now calibrated values, not the old placeholder values (38 / 38).
+
+**Firmware compensation strategy:**
+1. Raw pulses are accumulated each 1-second interval.
+2. A moving-average window (default 5 samples) smooths the flow rate before K lookup.
+3. The smoothed flow rate selects (or interpolates between) K-table points.
+4. Lifetime volume uses `totalPulses / interpolatedK(smoothedFlowRate)` — zero rounding error from raw pulse accumulation.
 
 ---
 

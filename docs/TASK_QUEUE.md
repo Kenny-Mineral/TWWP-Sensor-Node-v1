@@ -71,6 +71,7 @@ K value loaded from `/config/node.json` (`flow.k_factor_1`, `flow.k_factor_2`) �
 - [x] Time-series CSV log: `/data/YYYY-MM-DD.csv` written every 60 s with all current sensor readings.
 - [x] Create `docs/MQTT_TOPIC_MAP.md` with all current topics.
 - [x] Update `docs/PIN_ALLOCATION.md` — mark GPIO4/5 confirmed for flow sensors.
+- [x] **Flow sensor firmware improvements** — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing (configurable 1–20 samples), uint64_t raw pulse totals as authoritative volume source, configurable debounce (100–10000 µs) per channel, NVS + SD persistence of raw pulses, HA discovery for diagnostics (`pulses_raw`, `k_applied`, `flow_avg_window`) and config entities (K-table text, debounce number, avg window number), backward-compatible with single K-factor config. See [`plans/flow-sensor-improvements.md`](plans/flow-sensor-improvements.md).
 
 ---
 

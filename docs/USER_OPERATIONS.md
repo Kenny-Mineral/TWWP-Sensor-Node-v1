@@ -233,7 +233,32 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `flow_year_2` | number | Flow sensor 2 — usage this year (L, resets 1 Jan). |
 | `k_factor_1` | number | Nominal K value for flow sensor 1 (pulses/L). Mirrors `flow.k_factor_1` in `node.json`. |
 | `k_factor_2` | number | Nominal K value for flow sensor 2 (pulses/L). Mirrors `flow.k_factor_2` in `node.json`. |
+| `k_applied_1` | number | Interpolated K value currently applied to channel 1 (pulses/L). Updated each second from K-table lookup against smoothed flow rate. |
+| `k_applied_2` | number | Interpolated K value currently applied to channel 2 (pulses/L). |
+| `pulses_raw_1` | number | Lifetime raw pulse count for channel 1 (uint64_t). Never reset — enables post-hoc recalibration. Persisted to NVS + SD. |
+| `pulses_raw_2` | number | Lifetime raw pulse count for channel 2 (uint64_t). Never reset — enables post-hoc recalibration. Persisted to NVS + SD. |
+| `flow_avg_window_1` | number | Smoothed/averaged flow rate for channel 1 (L/min). Output of the moving-average ring buffer, used as input for K-table interpolation. |
+| `flow_avg_window_2` | number | Smoothed/averaged flow rate for channel 2 (L/min). |
+| `k_table_1` | string | Current K-table for channel 1 as JSON array. Empty string if using single-point table. |
+| `k_table_2` | string | Current K-table for channel 2 as JSON array. Empty string if using single-point table. |
+| `debounce_us_1` | number | ISR debounce period for channel 1 (µs). Range 100–10000. |
+| `debounce_us_2` | number | ISR debounce period for channel 2 (µs). Range 100–10000. |
+| `flow_avg_window` | number | Moving-average window size (samples, 1–20). Shared across both channels. |
 | `session_last_id` | number | ID of the most recently completed session. |
+| `session_last_start_ts` | number | Unix timestamp when the last session started. |
+| `session_last_end_ts` | number | Unix timestamp when the last session ended. |
+| `session_last_dur_s` | number | Duration of the last session in seconds. |
+| `session_last_vol_out` | number | Volume through RO Output (sensor 1) during last session, in litres. |
+| `session_last_vol_in` | number | Volume through RO Input (sensor 2) during last session, in litres. |
+| `session_enabled` | bool | Whether session tracking is currently enabled. |
+| `session_idle_timeout_s` | number | Session idle timeout in seconds (5–100). |
+| `flow_threshold_lpm` | number | Flow detection threshold in L/min (0.01–0.5). Flow below this is treated as off. |
+| `leak_suspect_1` | bool | Non-zero flow below threshold on channel 1 while no session is active. |
+| `leak_suspect_2` | bool | Non-zero flow below threshold on channel 2 while no session is active. |
+| `waste_ratio_today` | number | Waste:pure ratio for today. (input - output) / output. |
+| `waste_ratio_week` | number | Waste:pure ratio for this week. |
+| `waste_ratio_month` | number | Waste:pure ratio for this month. |
+| `waste_ratio_year` | number | Waste:pure ratio for this year. |
 | `session_last_start_ts` | number | Unix timestamp when the last session started. |
 | `session_last_end_ts` | number | Unix timestamp when the last session ended. |
 | `session_last_dur_s` | number | Duration of the last session in seconds. |
@@ -280,6 +305,8 @@ Pruning applies to `/data/` the same as `/log/` — files older than `sd.retenti
 
 The following diagnostic entities appear automatically on the device card in HA:
 
+### WiFi & Connectivity
+
 | Entity | Type | What it shows |
 |---|---|---|
 | WiFi Status | binary sensor | Connected / Disconnected |
@@ -292,6 +319,35 @@ The following diagnostic entities appear automatically on the device card in HA:
 | Restart WiFi | button | Disconnects and reconnects WiFi without clearing credentials |
 
 The **Restart WiFi** button sends `{"restart_wifi": true}` to `twwp/<id>/cmd`. The node disconnects and reconnects within a few seconds — no reboot, credentials are kept.
+
+### Flow Sensor Diagnostics
+
+These diagnostic entities appear under the RO Output and RO Input sub-device cards in HA:
+
+| Entity | Type | What it shows | State class |
+|---|---|---|---|
+| Output Raw Pulses | sensor (diagnostic) | Lifetime raw pulse count for channel 1 (never reset) | total_increasing |
+| Input Raw Pulses | sensor (diagnostic) | Lifetime raw pulse count for channel 2 (never reset) | total_increasing |
+| Output Applied K | sensor (diagnostic) | Interpolated K value currently applied to channel 1 (pulses/L) | measurement |
+| Input Applied K | sensor (diagnostic) | Interpolated K value currently applied to channel 2 (pulses/L) | measurement |
+| Output Smoothed Flow | sensor (diagnostic) | Moving-average flow rate for channel 1 (L/min), used for K-table lookup | measurement |
+| Input Smoothed Flow | sensor (diagnostic) | Moving-average flow rate for channel 2 (L/min), used for K-table lookup | measurement |
+
+### Flow Configuration Entities
+
+Configurable `number` and `text` entities appear on the device card for changing runtime settings:
+
+| Entity | Type | What it does | Range |
+|---|---|---|---|
+| Output K Factor | number (config) | Single-point K value for channel 1. Setting this also creates a 1-point K-table. | 1–99999 |
+| Input K Factor | number (config) | Single-point K value for channel 2. Setting this also creates a 1-point K-table. | 1–99999 |
+| Output K Table | text (config) | JSON array of calibration points for channel 1. Example: `[{"flow_lpm":0.42,"k":4972}]` | — |
+| Input K Table | text (config) | JSON array of calibration points for channel 2. | — |
+| Output Debounce | number (config) | ISR debounce period in microseconds. | 100–10000 |
+| Input Debounce | number (config) | ISR debounce period in microseconds. | 100–10000 |
+| Flow Average Window | number (config) | Moving-average window size shared across both channels. | 1–20 |
+
+These entities are all writable — changes are applied immediately in RAM and persisted to `/config/node.json` on the SD card.
 
 ## Flow Sensor Total Persistence
 

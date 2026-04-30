@@ -97,7 +97,7 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `watchdog.{h,cpp}` | Hardware WDT + crash log |
 | `status_led.{h,cpp}` | WS2812 RGB via FastLED |
 | `sensor_leak.{h,cpp}` | MH-RD digital — LOW = wet, logs event on state change |
-| `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel |
+| `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing, uint64_t raw pulse totals, K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel, runtime-configurable debounce/window |
 | `session_flow.{h,cpp}` | Tap session lifecycle — IDLE/ACTIVE/ENDING state machine, configurable idle timeout (NVS, 5–100 s) and flow threshold (NVS, 0.01–0.5 L/min), 10-session ring buffer with SD persistence, retained `sessions_recent` MQTT publish, leak-suspect detection |
 | `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
 | `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
@@ -126,6 +126,8 @@ struct SensorData {
     uint32_t  timestamp;
     float     flow1;           // L/min, calibrated
     float     flow_total;      // L, daily total
+    uint64_t  pulses_raw_1;    // lifetime raw pulses, sensor 1 (never reset)
+    uint64_t  pulses_raw_2;    // lifetime raw pulses, sensor 2 (never reset)
     float     pressure;        // kPa, calibrated
     float     temperature;     // °C
     float     supply_voltage;  // V
@@ -141,6 +143,8 @@ struct SensorData {
     float     water_temp;
 };
 ```
+
+> **Note:** The raw pulse fields (`pulses_raw_1`/`pulses_raw_2`) are accumulated from ISR-driven counters and persisted as `uint64_t` to NVS (`p1`/`p2` keys) and SD (`/config/flow_total.json`). This enables post-hoc recalibration: volume = total_pulses / K, with zero rounding error. See [`src/sensor_flow.cpp`](src/sensor_flow.cpp:38).
 
 ---
 
@@ -195,11 +199,26 @@ void loop() {
     "auto_prune": false
   },
   "flow": {
-    "k_factor_1": 38,
-    "k_factor_2": 38
+    "k_factor_1": 5500,
+    "k_factor_2": 20700,
+    "k_table_1": [
+      {"flow_lpm": 0.42, "k": 4972},
+      {"flow_lpm": 0.99, "k": 5468},
+      {"flow_lpm": 1.42, "k": 5476}
+    ],
+    "k_table_2": [
+      {"flow_lpm": 0.42, "k": 21120},
+      {"flow_lpm": 0.99, "k": 20818},
+      {"flow_lpm": 1.38, "k": 21104}
+    ],
+    "debounce_us_1": 1000,
+    "debounce_us_2": 500,
+    "flow_avg_window": 5
   }
 }
 ```
+
+> K-tables are optional — if absent the firmware uses the matching single `k_factor_*` as a 1-point table (backward compatible). `debounce_us_*` and `flow_avg_window` are also optional and default to the compile-time values in [`include/config.h`](include/config.h).
 
 `data/YYYY-MM-DD.csv` column header (current — columns added as sensors come online):
 ```
@@ -214,17 +233,18 @@ Every piece of state that must survive a reboot uses a layered strategy. The rul
 
 | Layer | What | How often | Survives |
 |---|---|---|---|
-| RAM | All live sensor values, rates, subtotals | Continuous | Normal operation only — lost on power cut |
-| NVS (ESP32 flash) | `flow_total_1`, `flow_total_2` | Every 10 s if changed | Power loss — at most 10 s gap |
-| SD `/config/flow_total.json` | Flow totals + period subtotals + current date | Every 60 s if changed | Full power loss including NVS corruption; also carries subtotals NVS cannot |
+| RAM | All live sensor values, rates, subtotals, ring buffers | Continuous | Normal operation only — lost on power cut |
+| NVS (ESP32 flash) | `flow_total_1`, `flow_total_2` (float), `totalPulses1`, `totalPulses2` (uint64_t via `p1`/`p2` keys) | Every 10 s if changed | Power loss — at most 10 s gap |
+| SD `/config/flow_total.json` | Flow totals + uint64_t pulse totals (`p1`/`p2`) + period subtotals + current date | Every 60 s if changed | Full power loss including NVS corruption; also carries subtotals NVS cannot |
 | SD `/data/YYYY-MM-DD.csv` | All sensor readings snapshot | Every 60 s | Permanent offline record for time-series analysis |
 | SD `/log/YYYY-MM-DD.csv` | State-change events (leak, reboot, errors) | On event | Permanent audit trail |
 | SD `/buf/<seq>.json` | MQTT messages that failed to send | On every publish attempt | Replayed FIFO to broker when connectivity returns |
 
 **Boot restore order for flow totals:**
-1. Load SD `flow_total.json` — gives totals, subtotals, and date
-2. Overlay NVS totals if larger — NVS saves more frequently so is likely more recent
+1. Load SD `flow_total.json` — gives float totals (`t1`/`t2`), uint64_t pulse totals (`p1`/`p2`), subtotals (`today1`/`today2`/`week1`/`week2`/`month1`/`month2`/`year1`/`year2`), and saved date
+2. Overlay NVS totals if larger — NVS saves more frequently so is likely more recent. NVS also carries uint64_t pulse totals (`p1`/`p2` keys in Preferences "flow" namespace)
 3. Subtotals are restored only if the saved date matches today; otherwise reset to zero
+4. Lifetime volume is computed as `totalPulses / interpolatedK(smoothedFlowRate)` — raw pulses are the authoritative volume source
 
 **Adding a new sensor** — follow this pattern:
 - Store live value in RAM (driver static)
