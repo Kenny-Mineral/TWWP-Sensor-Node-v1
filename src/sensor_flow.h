@@ -17,8 +17,16 @@ float sensorFlow_getTodayL(uint8_t ch);    // L since midnight
 float sensorFlow_getWeekL(uint8_t ch);     // L since Monday midnight
 float sensorFlow_getMonthL(uint8_t ch);    // L since 1st of month
 float sensorFlow_getYearL(uint8_t ch);     // L since 1 Jan
-float sensorFlow_getKFactor(uint8_t ch);   // configured nominal K value (pulses/L)
-bool  sensorFlow_setKFactor(uint8_t ch, float k); // update K in RAM + save to node.json
+float sensorFlow_getKFactor(uint8_t ch);        // configured nominal K value (pulses/L)
+bool  sensorFlow_setKFactor(uint8_t ch, float k);      // update K in RAM + save to node.json
+float sensorFlow_getAppliedKFactor(uint8_t ch);        // current interpolated K value
+float sensorFlow_getFlowAvgLpm(uint8_t ch);            // smoothed/averaged flow rate (L/min)
+bool  sensorFlow_setKTable(uint8_t ch, const char* json); // set K-table from JSON string, save to node.json
+bool  sensorFlow_setDebounceUs(uint8_t ch, uint32_t us);  // set debounce (100-10000 us), saved to node.json
+uint32_t sensorFlow_getDebounceUs(uint8_t ch);             // get current debounce (us)
+bool  sensorFlow_setFlowAvgWindow(uint8_t windowSize);     // set moving average window (1-20)
+uint8_t sensorFlow_getFlowAvgWindow();                     // get current window size
+const char* sensorFlow_getKTableJson(uint8_t ch);          // get K-table as JSON string (static buffer)
 void  sensorFlow_resetToday(uint8_t ch);   // today only — ch=1, ch=2, or ch=0 for both
 void  sensorFlow_resetWeek(uint8_t ch);    // this week only
 void  sensorFlow_resetMonth(uint8_t ch);   // this month only

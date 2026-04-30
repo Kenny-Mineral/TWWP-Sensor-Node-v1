@@ -9,10 +9,17 @@
 #include "time_rtc.h"
 
 static const uint32_t CALC_INTERVAL_MS = 1000UL;
-static const uint32_t DEBOUNCE_US_CH1 = 1000UL;  // K=5500, safe to ~10.9 L/min
-static const uint32_t DEBOUNCE_US_CH2 = 500UL;   // K=20700, safe to ~5.8 L/min
+static const uint32_t DEBOUNCE_US_DEFAULT_CH1 = 1000UL;  // K=5500, safe to ~10.9 L/min
+static const uint32_t DEBOUNCE_US_DEFAULT_CH2 = 500UL;   // K=20700, safe to ~5.8 L/min
 static const uint32_t MIN_PULSES_PER_INTERVAL_CH1 = 1U;  // USN-HS06PE on channel 1
 static const uint32_t MIN_PULSES_PER_INTERVAL_CH2 = 2U;  // USN-HS06PS on channel 2
+
+// Runtime-mutable debounce values (defaults from DEBOUNCE_US_DEFAULT_*)
+static uint32_t debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
+static uint32_t debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+
+// Runtime-mutable moving average window size (default = 5, max = FLOW_AVG_WINDOW_MAX)
+static uint8_t flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
 
 static float nominalK1 = FLOW_K_FACTOR_DEFAULT_CH1;
 static float nominalK2 = FLOW_K_FACTOR_DEFAULT_CH2;
@@ -43,8 +50,8 @@ static float flowMonth1 = 0.0f;
 static float flowMonth2 = 0.0f;
 static float flowYear1  = 0.0f;
 static float flowYear2  = 0.0f;
-static float flowAvgSamples1[FLOW_AVG_WINDOW] = {0.0f};
-static float flowAvgSamples2[FLOW_AVG_WINDOW] = {0.0f};
+static float flowAvgSamples1[FLOW_AVG_WINDOW_MAX] = {0.0f};
+static float flowAvgSamples2[FLOW_AVG_WINDOW_MAX] = {0.0f};
 static uint8_t flowAvgHead1 = 0;
 static uint8_t flowAvgHead2 = 0;
 static uint8_t flowAvgCount1 = 0;
@@ -114,10 +121,13 @@ static void persistKConfig() {
     JsonDocument doc;
     storeSd_readJsonFile(SD_CONFIG_PATH, doc);
 
-    JsonObject flow = doc["flow"].to<JsonObject>();
+    JsonObject flow = doc["flow"].as<JsonObject>();
+    if (flow.isNull()) flow = doc["flow"].to<JsonObject>();
     flow["k_factor_1"] = nominalK1;
     flow["k_factor_2"] = nominalK2;
 
+    flow.remove("k_table_1");
+    flow.remove("k_table_2");
     JsonArray table1Json = flow["k_table_1"].to<JsonArray>();
     JsonArray table2Json = flow["k_table_2"].to<JsonArray>();
     writeKTableToJson(table1Json, kTable1, kTableLen1);
@@ -133,11 +143,11 @@ static float pulsesToLitres(uint64_t pulses, float kFactor) {
     return (float)((double)pulses / (double)kFactor);
 }
 
-static uint8_t pushFlowSample(float sample, float* samples, uint8_t& head, uint8_t& count) {
+static uint8_t pushFlowSample(float sample, float* samples, uint8_t& head, uint8_t& count, uint8_t windowSize) {
     uint8_t slot = head;
     samples[slot] = sample;
-    head = (uint8_t)((head + 1U) % FLOW_AVG_WINDOW);
-    if (count < FLOW_AVG_WINDOW) {
+    head = (uint8_t)((head + 1U) % windowSize);
+    if (count < windowSize) {
         count++;
     }
     return slot;
@@ -155,13 +165,9 @@ static float averageFlowSamples(const float* samples, uint8_t count) {
     return sum / (float)count;
 }
 
-static void recomputeLifetimeTotals() {
-    flowTotal1 = pulsesToLitres(totalPulses1, appliedK1);
-    flowTotal2 = pulsesToLitres(totalPulses2, appliedK2);
-}
-
 float interpolateK(float flowLpm, const FlowKPoint* table, int len) {
     if (table == nullptr || len <= 0) {
+        Serial.printf("[FLOW] interpolateK: empty K-table, returning 1.0 (flowLpm=%.2f)\n", flowLpm);
         return 1.0f;
     }
     if (len == 1 || flowLpm <= table[0].flowLpm) {
@@ -201,7 +207,7 @@ static uint64_t litresToPulses(float litres, float kFactor) {
 
 static void IRAM_ATTR isrFlow1() {
     uint32_t nowUs = micros();
-    if ((uint32_t)(nowUs - lastPulseTimeUs1) < DEBOUNCE_US_CH1) {
+    if ((uint32_t)(nowUs - lastPulseTimeUs1) < debounceUsCh1) {
         return;
     }
     lastPulseTimeUs1 = nowUs;
@@ -210,7 +216,7 @@ static void IRAM_ATTR isrFlow1() {
 
 static void IRAM_ATTR isrFlow2() {
     uint32_t nowUs = micros();
-    if ((uint32_t)(nowUs - lastPulseTimeUs2) < DEBOUNCE_US_CH2) {
+    if ((uint32_t)(nowUs - lastPulseTimeUs2) < debounceUsCh2) {
         return;
     }
     lastPulseTimeUs2 = nowUs;
@@ -226,6 +232,9 @@ static int32_t mondayOf(int32_t unixDay) {
 static void loadConfig() {
     nominalK1 = FLOW_K_FACTOR_DEFAULT_CH1;
     nominalK2 = FLOW_K_FACTOR_DEFAULT_CH2;
+    debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
+    debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+    flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
     setSinglePointTable(kTable1, kTableLen1, nominalK1);
     setSinglePointTable(kTable2, kTableLen2, nominalK2);
 
@@ -248,6 +257,15 @@ static void loadConfig() {
         if (flow["k_table_2"].is<JsonArrayConst>()) {
             kTableLen2 = loadKTableFromJson(flow["k_table_2"].as<JsonArrayConst>(), kTable2);
         }
+
+        // Restore runtime-configurable values
+        uint32_t db1 = flow["debounce_us_1"] | DEBOUNCE_US_DEFAULT_CH1;
+        uint32_t db2 = flow["debounce_us_2"] | DEBOUNCE_US_DEFAULT_CH2;
+        if (db1 >= 100 && db1 <= 10000) debounceUsCh1 = db1;
+        if (db2 >= 100 && db2 <= 10000) debounceUsCh2 = db2;
+
+        uint8_t aw = flow["flow_avg_window"] | FLOW_AVG_WINDOW_DEFAULT;
+        if (aw >= 1 && aw <= FLOW_AVG_WINDOW_MAX) flowAvgWindow = aw;
     }
 
     if (kTableLen1 <= 0) {
@@ -265,6 +283,10 @@ static void loadConfig() {
                   kTableLen1,
                   nominalK2,
                   kTableLen2);
+    Serial.printf("[FLOW] debounce ch1=%lu ch2=%lu avgWindow=%u\n",
+                  (unsigned long)debounceUsCh1,
+                  (unsigned long)debounceUsCh2,
+                  flowAvgWindow);
 }
 
 static void loadTotalsFromSd() {
@@ -378,7 +400,6 @@ bool sensorFlow_begin() {
     loadConfig();
     loadTotalsFromSd();   // SD first — has subtotals + date
     loadTotalsFromNvs();  // NVS second — may have a more recent total
-    recomputeLifetimeTotals();
 
     pinMode(PIN_FLOW_1, INPUT_PULLUP);
     pinMode(PIN_FLOW_2, INPUT_PULLUP);
@@ -413,33 +434,32 @@ void sensorFlow_loop() {
     uint32_t meteredP1 = (p1 >= MIN_PULSES_PER_INTERVAL_CH1) ? p1 : 0U;
     uint32_t meteredP2 = (p2 >= MIN_PULSES_PER_INTERVAL_CH2) ? p2 : 0U;
 
+    // 1) Push raw flow rate using last cycle's appliedK
     uint8_t sampleSlot1 = pushFlowSample(((float)meteredP1 * 60.0f) / appliedK1,
                                          flowAvgSamples1,
                                          flowAvgHead1,
-                                         flowAvgCount1);
+                                         flowAvgCount1,
+                                         flowAvgWindow);
     uint8_t sampleSlot2 = pushFlowSample(((float)meteredP2 * 60.0f) / appliedK2,
                                          flowAvgSamples2,
                                          flowAvgHead2,
-                                         flowAvgCount2);
+                                         flowAvgCount2,
+                                         flowAvgWindow);
 
+    // 2) Smooth → interpolateK() → new appliedK
     float smoothedFlow1 = averageFlowSamples(flowAvgSamples1, flowAvgCount1);
     float smoothedFlow2 = averageFlowSamples(flowAvgSamples2, flowAvgCount2);
     appliedK1 = interpolateK(smoothedFlow1, kTable1, kTableLen1);
     appliedK2 = interpolateK(smoothedFlow2, kTable2, kTableLen2);
 
+    // 3) Recompute litres with new appliedK, update ring buffer slot once
     float litres1 = pulsesToLitres(meteredP1, appliedK1);  // pulses / (pulses/L) = L
     float litres2 = pulsesToLitres(meteredP2, appliedK2);
 
     flowAvgSamples1[sampleSlot1] = litres1 * 60.0f;
     flowAvgSamples2[sampleSlot2] = litres2 * 60.0f;
-    flowRate1 = averageFlowSamples(flowAvgSamples1, flowAvgCount1);
-    flowRate2 = averageFlowSamples(flowAvgSamples2, flowAvgCount2);
-    appliedK1 = interpolateK(flowRate1, kTable1, kTableLen1);
-    appliedK2 = interpolateK(flowRate2, kTable2, kTableLen2);
-    litres1 = pulsesToLitres(meteredP1, appliedK1);
-    litres2 = pulsesToLitres(meteredP2, appliedK2);
-    flowAvgSamples1[sampleSlot1] = litres1 * 60.0f;
-    flowAvgSamples2[sampleSlot2] = litres2 * 60.0f;
+
+    // 4) Compute final flowRate
     flowRate1 = averageFlowSamples(flowAvgSamples1, flowAvgCount1);
     flowRate2 = averageFlowSamples(flowAvgSamples2, flowAvgCount2);
 
@@ -483,7 +503,8 @@ void sensorFlow_loop() {
         }
     }
 
-    recomputeLifetimeTotals();
+    flowTotal1 += litres1;
+    flowTotal2 += litres2;
     flowToday1 += litres1;
     flowToday2 += litres2;
     flowWeek1  += litres1;
@@ -521,12 +542,10 @@ bool sensorFlow_setKFactor(uint8_t ch, float k) {
         nominalK1 = k;
         setSinglePointTable(kTable1, kTableLen1, k);
         appliedK1 = interpolateK(flowRate1, kTable1, kTableLen1);
-        recomputeLifetimeTotals();
     } else if (ch == 2) {
         nominalK2 = k;
         setSinglePointTable(kTable2, kTableLen2, k);
         appliedK2 = interpolateK(flowRate2, kTable2, kTableLen2);
-        recomputeLifetimeTotals();
     }
     else return false;
 
@@ -614,12 +633,15 @@ void sensorFlow_factoryReset() {
     flowTotal1 = flowToday1 = flowWeek1 = flowMonth1 = flowYear1 = 0.0f;
     flowTotal2 = flowToday2 = flowWeek2 = flowMonth2 = flowYear2 = 0.0f;
     totalPulses1 = totalPulses2 = 0;
-    for (uint8_t i = 0; i < FLOW_AVG_WINDOW; ++i) {
+    for (uint8_t i = 0; i < FLOW_AVG_WINDOW_MAX; ++i) {
         flowAvgSamples1[i] = 0.0f;
         flowAvgSamples2[i] = 0.0f;
     }
     flowAvgHead1 = flowAvgHead2 = 0;
     flowAvgCount1 = flowAvgCount2 = 0;
+    debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
+    debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+    flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
     appliedK1 = interpolateK(0.0f, kTable1, kTableLen1);
     appliedK2 = interpolateK(0.0f, kTable2, kTableLen2);
     prefs.begin("flow", false);
@@ -639,3 +661,112 @@ float sensorFlow_getWeekL(uint8_t ch)    { return ch == 1 ? flowWeek1  : flowWee
 float sensorFlow_getMonthL(uint8_t ch)   { return ch == 1 ? flowMonth1 : flowMonth2; }
 float sensorFlow_getYearL(uint8_t ch)    { return ch == 1 ? flowYear1  : flowYear2; }
 float sensorFlow_getKFactor(uint8_t ch)  { return ch == 1 ? nominalK1  : nominalK2; }
+float sensorFlow_getAppliedKFactor(uint8_t ch) { return ch == 1 ? appliedK1 : appliedK2; }
+float sensorFlow_getFlowAvgLpm(uint8_t ch) {
+    // Return the smoothed flow rate (from the ring buffer average)
+    return ch == 1 ? averageFlowSamples(flowAvgSamples1, flowAvgCount1)
+                   : averageFlowSamples(flowAvgSamples2, flowAvgCount2);
+}
+uint32_t sensorFlow_getDebounceUs(uint8_t ch) { return ch == 1 ? debounceUsCh1 : debounceUsCh2; }
+uint8_t sensorFlow_getFlowAvgWindow() { return flowAvgWindow; }
+
+const char* sensorFlow_getKTableJson(uint8_t ch) {
+    static char buf[512]; // enough for 5 points with ~50 chars each
+    const FlowKPoint* table = (ch == 1) ? kTable1 : kTable2;
+    int len = (ch == 1) ? kTableLen1 : kTableLen2;
+
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (int i = 0; i < len; ++i) {
+        JsonObject pt = arr.add<JsonObject>();
+        pt["flow_lpm"] = table[i].flowLpm;
+        pt["k"] = table[i].kPulsesPerL;
+    }
+    size_t written = serializeJson(doc, buf, sizeof(buf));
+    if (written == 0 || written >= sizeof(buf)) {
+        buf[0] = '\0';
+    }
+    return buf;
+}
+
+bool sensorFlow_setKTable(uint8_t ch, const char* json) {
+    // Parse JSON array of {flow_lpm, k} objects
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) {
+        Serial.printf("[FLOW] setKTable ch=%d JSON parse error: %s\n", ch, err.c_str());
+        return false;
+    }
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    if (!arr) {
+        Serial.printf("[FLOW] setKTable ch=%d: expected JSON array\n", ch);
+        return false;
+    }
+
+    FlowKPoint* table = (ch == 1) ? kTable1 : kTable2;
+    int& len = (ch == 1) ? kTableLen1 : kTableLen2;
+    float& nomK = (ch == 1) ? nominalK1 : nominalK2;
+    float& appK = (ch == 1) ? appliedK1 : appliedK2;
+    float& rate = (ch == 1) ? flowRate1 : flowRate2;
+
+    int loaded = loadKTableFromJson(arr, table);
+    if (loaded <= 0) {
+        Serial.printf("[FLOW] setKTable ch=%d: no valid points in JSON\n", ch);
+        return false;
+    }
+    len = loaded;
+
+    // Update nominal K from the first point's K (backward compat)
+    nomK = table[0].kPulsesPerL;
+    appK = interpolateK(rate, table, len);
+    Serial.printf("[FLOW] setKTable ch=%d: loaded %d points\n", ch, loaded);
+    persistKConfig();
+    return true;
+}
+
+bool sensorFlow_setDebounceUs(uint8_t ch, uint32_t us) {
+    if (us < 100 || us > 10000) {
+        Serial.printf("[FLOW] setDebounceUs ch=%d: %lu out of range (100-10000)\n", ch, (unsigned long)us);
+        return false;
+    }
+    if (ch == 1) {
+        debounceUsCh1 = us;
+    } else if (ch == 2) {
+        debounceUsCh2 = us;
+    } else {
+        return false;
+    }
+    Serial.printf("[FLOW] debounce ch%d set to %lu us\n", ch, (unsigned long)us);
+
+    // Persist to node.json
+    JsonDocument doc;
+    storeSd_readJsonFile(SD_CONFIG_PATH, doc);
+    JsonObject flow = doc["flow"].as<JsonObject>();
+    if (flow.isNull()) flow = doc["flow"].to<JsonObject>();
+    flow[ch == 1 ? "debounce_us_1" : "debounce_us_2"] = (unsigned long)us;
+    storeSd_writeJsonFile(SD_CONFIG_PATH, doc);
+    return true;
+}
+
+bool sensorFlow_setFlowAvgWindow(uint8_t windowSize) {
+    if (windowSize < 1 || windowSize > FLOW_AVG_WINDOW_MAX) {
+        Serial.printf("[FLOW] setFlowAvgWindow: %u out of range (1-%d)\n", windowSize, FLOW_AVG_WINDOW_MAX);
+        return false;
+    }
+    flowAvgWindow = windowSize;
+
+    // Clamp ring buffer counts to new window size
+    if (flowAvgCount1 > windowSize) flowAvgCount1 = windowSize;
+    if (flowAvgCount2 > windowSize) flowAvgCount2 = windowSize;
+
+    Serial.printf("[FLOW] flow avg window set to %u\n", windowSize);
+
+    // Persist to node.json
+    JsonDocument doc;
+    storeSd_readJsonFile(SD_CONFIG_PATH, doc);
+    JsonObject flow = doc["flow"].as<JsonObject>();
+    if (flow.isNull()) flow = doc["flow"].to<JsonObject>();
+    flow["flow_avg_window"] = windowSize;
+    storeSd_writeJsonFile(SD_CONFIG_PATH, doc);
+    return true;
+}

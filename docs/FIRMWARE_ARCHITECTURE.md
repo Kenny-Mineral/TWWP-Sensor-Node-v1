@@ -92,6 +92,7 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 |---|---|
 | `net_wifi.{h,cpp}` | WiFiManager + reconnect + credential reset |
 | `net_mqtt.{h,cpp}` | MQTT/TLS client + HA discovery + SD offline buffer |
+| `net_ota.{h,cpp}` | OTA update driver — MQTT-triggered HTTPS update with MD5 verification, rollback window, and ArduinoOTA servicing during idle state |
 | `time_rtc.{h,cpp}` | DS3231 + NTP sync + drift correction |
 | `store_sd.{h,cpp}` | SD event log + time-series data log + FIFO ring-buffer queue + JSON file helpers |
 | `watchdog.{h,cpp}` | Hardware WDT + crash log |

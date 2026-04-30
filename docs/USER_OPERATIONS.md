@@ -84,6 +84,85 @@ Command behavior:
 | `sdrm <path>` | Removes a file or empty directory. Refuses protected paths. |
 | `sdprune` | Deletes dated `/log/YYYY-MM-DD.csv` files older than configured retention. |
 
+## OTA Firmware Update
+
+Two OTA paths are now available:
+
+| Path | Use case | Requirement |
+|---|---|---|
+| MQTT-driven OTA | Remote update from Home Assistant or any MQTT client | WiFi connected, valid HTTPS firmware URL |
+| ArduinoOTA | LAN development upload from the same local network | Node and development computer on same LAN |
+
+### Serial OTA commands
+
+Open the monitor first:
+
+```bash
+pio device monitor
+```
+
+Then use either of these commands:
+
+```text
+ota https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin
+ota https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin d41d8cd98f00b204e9800998ecf8427e
+ota_state
+```
+
+| Command | What it does |
+|---|---|
+| `ota <url>` | Starts an HTTPS OTA update immediately. |
+| `ota <url> <md5>` | Starts an HTTPS OTA update and checks the downloaded firmware against the expected MD5 hash. |
+| `ota_state` | Prints current OTA state, progress percentage, last error, and active URL. |
+
+`ota_state` is useful for checking whether the node is idle, downloading, validating, or failed.
+
+### MQTT OTA command
+
+Publish to the existing command topic:
+
+```text
+twwp/<node_id>/cmd
+```
+
+Example payload:
+
+```json
+{
+  "ota_url": "https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin",
+  "ota_md5": "d41d8cd98f00b204e9800998ecf8427e"
+}
+```
+
+`ota_md5` is optional but recommended. If present, it must be exactly 32 hexadecimal characters.
+
+### OTA status fields in heartbeat
+
+The status heartbeat now includes these OTA fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ota_state` | number | OTA state enum: `0=IDLE`, `1=DOWNLOADING`, `2=VERIFYING`, `3=APPLYING`, `4=SUCCESS`, `5=FAILED`. |
+| `ota_progress_pct` | number | Download progress percentage from `0` to `100`. |
+| `ota_error` | string | Last OTA error message. Present only when a failure has been recorded. |
+
+### Home Assistant OTA entities
+
+The node now publishes two diagnostic entities through MQTT discovery:
+
+| Entity | Purpose |
+|---|---|
+| `sensor.twwp_<id>_ota_state` | Shows the current OTA state code from the status heartbeat. |
+| `sensor.twwp_<id>_ota_progress` | Shows OTA download progress percentage. |
+
+### ArduinoOTA notes
+
+ArduinoOTA is enabled during normal idle operation. This is intended for local development uploads on the LAN, not internet-facing updates. If an MQTT-driven OTA is already active, ArduinoOTA handling is skipped until the OTA state returns to idle.
+
+### Important limit
+
+The serial console command buffer in [`serviceSerialConsole()`](src/main.cpp:131) is only 128 bytes long. Very long firmware URLs may be truncated when entered over USB serial. MQTT OTA is the safer path for long URLs.
+
 Protected paths that `sdrm` refuses:
 
 ```text
@@ -258,6 +337,9 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `waste_ratio_today` | number | Waste:pure ratio for today. (input - output) / output. |
 | `waste_ratio_week` | number | Waste:pure ratio for this week. |
 | `waste_ratio_month` | number | Waste:pure ratio for this month. |
+| `ota_state` | number | OTA state enum: `0=IDLE`, `1=DOWNLOADING`, `2=VERIFYING`, `3=APPLYING`, `4=SUCCESS`, `5=FAILED`. |
+| `ota_progress_pct` | number | OTA download progress percentage. |
+| `ota_error` | string | Last OTA error message. Present only after a failed OTA. |
 | `waste_ratio_year` | number | Waste:pure ratio for this year. |
 | `session_last_start_ts` | number | Unix timestamp when the last session started. |
 | `session_last_end_ts` | number | Unix timestamp when the last session ended. |

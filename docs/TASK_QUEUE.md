@@ -99,11 +99,17 @@ Actuator not yet purchased — solenoid valve or motorised ball valve TBD.
 
 ---
 
-## M4 — OTA over MQTT
+## M4 — OTA over MQTT ✓ DONE
 
-- [ ] Decide: `ArduinoOTA` (LAN) vs MQTT-driven OTA (internet).
-- [ ] If MQTT-driven: subscribe `twwp/<id>/ota` for URL, fetch with `HTTPClient`, write with `Update.h`.
-- [ ] Rollback: if boot crashes within 60s, `esp_ota_set_boot_partition` to known-good partition.
+- [x] **Decision:** MQTT-driven OTA (internet) + ArduinoOTA (LAN) — both supported.
+- [x] MQTT-driven: subscribe `twwp/<id>/cmd` for `{"ota_url": "...", "ota_md5": "..."}`, fetch HTTPS with `WiFiClientSecure`, write with `Update.h`.
+- [x] MQTT progress published to `twwp/<id>/ota_state` (retained) every 2s during download.
+- [x] Rollback: NVS `ota_boot_pending` flag checked on boot; if crash detected within 60s, `esp_ota_set_boot_partition` to known-good partition.
+- [x] Serial console: `ota <url> [md5]` and `ota_state` commands.
+- [x] ArduinoOTA: enabled in `netOta_loop()` when state = IDLE, hostname `twwp-<NODE_ID>`.
+- [x] HA discovery: `sensor.twwp_<id>_ota_state` and `sensor.twwp_<id>_ota_progress` diagnostic entities.
+- [x] Server: Hetzner nginx serves `https://twwp-iot.duckdns.org/firmware/` with TLS.
+- [x] Documentation: USER_OPERATIONS, MQTT_TOPIC_MAP, FIRMWARE_ARCHITECTURE updated.
 
 ---
 

@@ -4,7 +4,23 @@
 bool     sessionFlow_begin();
 void     sessionFlow_loop();
 
-// Getters for last completed session — used in status payload and HA discovery
+bool     sessionFlow_isEnabled();
+void     sessionFlow_setEnabled(bool en);  // persisted to NVS
+void     sessionFlow_factoryReset();       // clear session ID + last-session state from NVS
+
+// Runtime-configurable thresholds (persisted to NVS)
+void     sessionFlow_setIdleTimeout(uint32_t s);   // 5–100 s
+uint32_t sessionFlow_getIdleTimeoutS();
+void     sessionFlow_setFlowThreshold(float lpm);  // 0.01–0.5 L/min
+float    sessionFlow_getFlowThreshold();
+
+// Leak suspect: non-zero flow below threshold while no session is active
+bool     sessionFlow_getLeakSuspect(uint8_t ch);   // ch = 1 or 2
+
+// Republish the retained sessions_recent topic (call on MQTT reconnect)
+void     sessionFlow_republishRecentSessions();
+
+// Getters for last completed session — used in status payload
 uint32_t sessionFlow_getLastId();
 uint32_t sessionFlow_getLastStartTs();
 uint32_t sessionFlow_getLastEndTs();

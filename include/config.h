@@ -32,13 +32,20 @@
 #define FLOW_K_FACTOR_DEFAULT_CH1   5500.0f
 #define FLOW_K_FACTOR_DEFAULT_CH2   20700.0f
 #define FLOW_K_TABLE_MAX_POINTS     5
-#define FLOW_AVG_WINDOW             5
+#define FLOW_AVG_WINDOW_MAX         20       // maximum moving average window (runtime configurable 1-20)
+#define FLOW_AVG_WINDOW_DEFAULT     5
 
 // Session tracking
 #define TOPIC_SESSION               "twwp/" NODE_ID "/session"
 #define TOPIC_SESSIONS_RECENT       "twwp/" NODE_ID "/sessions_recent"
+#define TOPIC_OTA_STATE             "twwp/" NODE_ID "/ota_state"
 #define SD_SESSION_LOG_PATH         "/log/sessions.csv"
 #define SD_SESSIONS_RECENT_PATH     "/config/sessions_recent.json"
 #define SESSION_IDLE_TIMEOUT_MS     90000UL
 #define FLOW_ACTIVE_THRESHOLD_LPM   0.05f
 #define SESSIONS_RECENT_MAX         10
+
+// OTA (M4)
+#define OTA_ROLLBACK_TIMEOUT_MS     60000UL
+#define OTA_HTTP_TIMEOUT_MS         300000UL
+#define OTA_PROGRESS_INTERVAL_MS    2000UL

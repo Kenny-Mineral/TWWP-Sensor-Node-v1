@@ -17,6 +17,7 @@ QoS is 0 for all topics. Retain and direction as noted.
 | `twwp/<id>/session` | no | node → broker | Session-end event. Published when the idle timeout expires. JSON payload with session_id, start_ts, end_ts, duration_s, volume_out_L, volume_in_L, peak_rate_out, peak_rate_in. |
 | `twwp/<id>/sessions_recent` | yes | node → broker | Retained JSON array of the last 10 sessions (newest-first). Republished after each session ends and on MQTT reconnect. |
 | `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4). |
+| `twwp/<id>/ota_state` | yes | node → broker | Dedicated OTA state topic for high-frequency OTA progress/status updates. Reserved for OTA telemetry. |
 | `twwp/register` | no | node → broker | First-connect registration payload (M8 — not yet implemented). |
 
 ---
@@ -107,6 +108,25 @@ A `number` entity that controls the moving-average window size (shared across bo
 
 ---
 
+### OTA diagnostics (M4)
+
+OTA discovery entities are read-only diagnostic sensors backed by [`twwp/<id>/status`](docs/MQTT_TOPIC_MAP.md).
+
+| Topic | Entity type | Unit | HA state class |
+|---|---|---|---|
+| `homeassistant/sensor/twwp_<id>_ota_state/config` | sensor (diagnostic) |  | measurement |
+| `homeassistant/sensor/twwp_<id>_ota_progress/config` | sensor (diagnostic) | % | measurement |
+
+Mapped status fields:
+
+| Status field | Meaning |
+|---|---|
+| `ota_state` | OTA state enum: `0=IDLE`, `1=DOWNLOADING`, `2=VERIFYING`, `3=APPLYING`, `4=SUCCESS`, `5=FAILED` |
+| `ota_progress_pct` | OTA download progress percentage |
+| `ota_error` | Last OTA failure string, if present |
+
+---
+
 ## Command topic payload format
 
 The node subscribes to `twwp/<id>/cmd`. Payload must be valid JSON. Supported keys:
@@ -140,6 +160,8 @@ The node subscribes to `twwp/<id>/cmd`. Payload must be valid JSON. Supported ke
 | `set_debounce_us_2` | int (100–10000) | Debounce period in microseconds for channel 2. Persisted to `node.json`. |
 | `set_flow_avg_window` | int (1–20) | Moving average window size (shared across both channels). Persisted to `node.json`. |
 | `restart_wifi` | bool | Trigger WiFi reconnect. |
+| `ota_url` | string | Start HTTPS OTA update from the given firmware URL. |
+| `ota_md5` | string | Optional expected MD5 hash for the firmware image. Used only with `ota_url`. |
 
 Example (sent automatically by HA when user changes the K Factor 1 number entity to 200):
 
@@ -161,3 +183,4 @@ Multiple keys can be set in one message. Unknown keys are silently ignored.
 - K-table entities are writable `text` entities that accept a JSON array of calibration points — change them directly in HA.
 - Debounce and flow average window entities are writable `number` entities — runtime-configurable without reflashing.
 - All writable entities persist changes to `/config/node.json` on the SD card immediately.
+- OTA status is exposed both in the regular retained status heartbeat and in the dedicated retained `twwp/<id>/ota_state` topic for future live-progress dashboards.
