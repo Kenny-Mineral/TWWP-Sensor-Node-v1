@@ -231,8 +231,8 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `flow_month_2` | number | Flow sensor 2 — usage this month (L, resets 1st of month). |
 | `flow_year_1` | number | Flow sensor 1 — usage this year (L, resets 1 Jan). |
 | `flow_year_2` | number | Flow sensor 2 — usage this year (L, resets 1 Jan). |
-| `k_factor_1` | number | Active K value for flow sensor 1 (pulses/L). Set in `node.json`. |
-| `k_factor_2` | number | Active K value for flow sensor 2 (pulses/L). Set in `node.json`. |
+| `k_factor_1` | number | Nominal K value for flow sensor 1 (pulses/L). Mirrors `flow.k_factor_1` in `node.json`. |
+| `k_factor_2` | number | Nominal K value for flow sensor 2 (pulses/L). Mirrors `flow.k_factor_2` in `node.json`. |
 | `session_last_id` | number | ID of the most recently completed session. |
 | `session_last_start_ts` | number | Unix timestamp when the last session started. |
 | `session_last_end_ts` | number | Unix timestamp when the last session ended. |
@@ -306,21 +306,59 @@ On boot the node loads SD first (has subtotals and date), then overlays the NVS 
 
 ## Flow Sensor K Factor Config
 
-The K value (pulses per litre) is loaded from `/config/node.json` at boot. Change it by editing the SD card — no reflash needed.
+Flow calibration is loaded from [`/config/node.json`](docs/USER_OPERATIONS.md:309) at boot. Phase 2 adds multi-point K tables plus a 5-sample moving-average flow window before K lookup. Change the file on the SD card — no reflash needed.
+
+Current defaults:
+
+| Sensor model | Channel | Default nominal K |
+|---|---|---|
+| USN-HS06PE (RO Output) | 1 / GPIO4 | 5500 pulses/L |
+| USN-HS06PS (RO Input) | 2 / GPIO5 | 20700 pulses/L |
+
+Minimal backward-compatible config:
 
 ```json
 {
   "flow": {
-    "k_factor_1": 38,
-    "k_factor_2": 38
+    "k_factor_1": 5500,
+    "k_factor_2": 20700
   }
 }
 ```
 
-| Sensor model | K value |
+If [`k_table_1`](docs/USER_OPERATIONS.md:329) or [`k_table_2`](docs/USER_OPERATIONS.md:334) is missing, the firmware automatically treats the matching single [`k_factor_*`](docs/USER_OPERATIONS.md:320) value as a 1-point calibration table.
+
+Multi-point config example:
+
+```json
+{
+  "flow": {
+    "k_factor_1": 5500,
+    "k_factor_2": 20700,
+    "k_table_1": [
+      {"flow_lpm": 0.42, "k": 4972},
+      {"flow_lpm": 0.99, "k": 5468},
+      {"flow_lpm": 1.42, "k": 5476}
+    ],
+    "k_table_2": [
+      {"flow_lpm": 0.42, "k": 21120},
+      {"flow_lpm": 0.99, "k": 20818},
+      {"flow_lpm": 1.38, "k": 21104}
+    ]
+  }
+}
+```
+
+Rules:
+
+| Field | Meaning |
 |---|---|
-| USN-HS06PE (0.3–6.0 LPM) | 38 |
-| USN-HS06PS (0.1–1.0 LPM) | 200 |
+| `k_factor_1` / `k_factor_2` | Nominal fallback K for each channel, still published in heartbeat and HA. |
+| `k_table_1` / `k_table_2` | Optional ordered calibration arrays, lowest flow first. |
+| `flow_lpm` | Calibration flow point in L/min. |
+| `k` | K factor at that flow point in pulses/L. |
+
+The firmware clamps below the first point and above the last point, and linearly interpolates between points. Lifetime total volume now comes from raw total pulses divided by the interpolated K based on the smoothed flow rate. Today/week/month/year subtotals also use the interpolated K for each one-second interval.
 
 ## Session Tracking
 
@@ -380,7 +418,7 @@ Via MQTT (example):
 
 HA buttons: "Reset Today" and "Reset Totals" appear on the RO Output and RO Input device cards. "Reset Today (Both)" and "Reset Totals (Both)" appear on the main TWWP node card.
 
-The active K value is published in the heartbeat as `k_factor_1` / `k_factor_2` and appears as a diagnostic sensor in HA — useful to confirm the correct sensor is configured without checking the SD card.
+The nominal K value is published in the heartbeat as `k_factor_1` / `k_factor_2` and appears as a diagnostic sensor in HA — useful to confirm the configured fallback calibration without checking the SD card.
 
 Flow totals are persisted to `/config/flow_total.json`. To inspect:
 

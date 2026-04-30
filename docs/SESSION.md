@@ -2,23 +2,16 @@
 _Update before switching tools. Commit immediately after._
 
 ## Last done
-Session tracking overhaul complete: configurable idle timeout (5–100 s, HA number entity, NVS-persisted), configurable flow threshold (0.01–0.5 L/min, HA number entity, NVS-persisted), 10-session ring buffer with SD persistence and retained MQTT publish to `twwp/<id>/sessions_recent`, leak-suspect binary sensors per channel, HA discovery for all new entities, status heartbeat published immediately on MQTT reconnect (fixes "HA gets weird after power loss"). HACS installed on Hetzner HA server (fixed wrong docker volume path via `docker cp`). Firmware build clean (RAM 17.2%, Flash 21.2%). Firmware NOT yet flashed — board ready.
+Phase 2 flow sensor calibration improvements implemented in [`src/sensor_flow.cpp`](src/sensor_flow.cpp:1), [`src/sensor_flow.h`](src/sensor_flow.h:1), and [`include/config.h`](include/config.h:1): multi-point `FlowKPoint` tables, backward-compatible single-K fallback loading from [`/config/node.json`](docs/USER_OPERATIONS.md:309), linear [`interpolateK()`](src/sensor_flow.h:9), 5-sample moving-average flow smoothing, updated default nominal K values (5500 / 20700), and volume-first lifetime/subtotal calculations based on interpolated K. [`pio run`](platformio.ini) builds clean (RAM 17.3%, Flash 21.3%). [`docs/USER_OPERATIONS.md`](docs/USER_OPERATIONS.md:307) updated for the new calibration schema.
 
 ## In progress
-- M docs/MQTT_TOPIC_MAP.md
-- M include/config.h
-- M src/main.cpp
-- M src/sensor_flow.cpp
-- M src/sensor_flow.h
-- M src/session_flow.cpp
-- M src/session_flow.h
-- ?? docs/LOVELACE_SESSIONS_CARD.yaml
+none
 
 ## Next step
-Flash firmware (`pio run --target upload`), then complete HACS UI setup in HA (Settings → Devices & Services → Add Integration → HACS → GitHub login), install flex-table-card via HACS Frontend, add Lovelace card from `docs/LOVELACE_SESSIONS_CARD.yaml`, verify session entities appear on main device card (not Diagnostics).
+Pick up the first unchecked task in [`docs/TASK_QUEUE.md`](docs/TASK_QUEUE.md:81): confirm the pressure transducer model and PSI range with the user before ordering.
 
 ## Tool last used
-claude-code
+codex
 
 ## Updated
-2026-04-29 00:00
+2026-04-30 23:55

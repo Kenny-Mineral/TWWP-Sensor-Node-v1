@@ -28,8 +28,17 @@
 #define DATA_LOG_INTERVAL_MS        60000UL   // time-series CSV snapshot interval
 #define NVS_FLOW_SAVE_INTERVAL_MS   10000UL   // NVS flow total save interval
 
+// Flow sensor calibration
+#define FLOW_K_FACTOR_DEFAULT_CH1   5500.0f
+#define FLOW_K_FACTOR_DEFAULT_CH2   20700.0f
+#define FLOW_K_TABLE_MAX_POINTS     5
+#define FLOW_AVG_WINDOW             5
+
 // Session tracking
 #define TOPIC_SESSION               "twwp/" NODE_ID "/session"
+#define TOPIC_SESSIONS_RECENT       "twwp/" NODE_ID "/sessions_recent"
 #define SD_SESSION_LOG_PATH         "/log/sessions.csv"
+#define SD_SESSIONS_RECENT_PATH     "/config/sessions_recent.json"
 #define SESSION_IDLE_TIMEOUT_MS     90000UL
 #define FLOW_ACTIVE_THRESHOLD_LPM   0.05f
+#define SESSIONS_RECENT_MAX         10
