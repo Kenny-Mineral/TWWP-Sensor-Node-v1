@@ -47,10 +47,13 @@ Expected healthy boot signs:
 [BOOT] TWWP Sensor Node starting
 [WiFi] connected, IP=...
 [RTC] NTP sync ok ...
+[VOLTAGE] begin ok
 [MQTT] connected
 [MQTT] HA discovery published
 [M0] status ... "ts":<non-zero>
 ```
+
+If you see `[VOLTAGE] ADS1115 not found` instead, check that the ADS1115 is wired to GPIO9 (SDA) / GPIO3 (SCL) and that the ADDR pin is tied to GND (I²C address 0x48).
 
 ## SD Serial Commands
 
@@ -86,82 +89,119 @@ Command behavior:
 
 ## OTA Firmware Update
 
-Two OTA paths are now available:
+Two OTA paths are available:
 
 | Path | Use case | Requirement |
 |---|---|---|
-| MQTT-driven OTA | Remote update from Home Assistant or any MQTT client | WiFi connected, valid HTTPS firmware URL |
-| ArduinoOTA | LAN development upload from the same local network | Node and development computer on same LAN |
+| ArduinoOTA | LAN development upload — no USB cable needed | Node powered, on same WiFi as laptop |
+| MQTT-driven OTA | Remote update from anywhere | Node online, firmware binary on HTTPS server |
 
-### Serial OTA commands
+---
 
-Open the monitor first:
+### Method 1 — ArduinoOTA (LAN, no USB)
+
+The node advertises itself via mDNS as `twwp-wh_001.local` once WiFi connects.
+
+**Steps:**
+
+1. Make sure the node is powered and connected to WiFi (check `twwp/wh_001/#` heartbeat is arriving).
+2. In VS Code PlatformIO toolbar, click the environment selector (bottom status bar — shows `waveshare-esp32-s3-rs485-can` by default) and switch to **`ota`**.
+3. Click the **Upload** button (→). PlatformIO will build and push over WiFi.
+4. Switch the environment back to `waveshare-esp32-s3-rs485-can` for normal USB work.
+
+The `[env:ota]` block in `platformio.ini` targets `twwp-wh_001.local`. If the NODE_ID changes, update `upload_port` in that block to match.
+
+ArduinoOTA has no password set — LAN access only, not exposed to the internet.
+
+---
+
+### Method 2 — MQTT-driven OTA (remote)
+
+Use this when the node is deployed and USB access is not practical.
+
+**Step 1 — Build the binary:**
 
 ```bash
-pio device monitor
+pio run
 ```
 
-Then use either of these commands:
+The compiled binary is at:
+```
+.pio/build/waveshare-esp32-s3-rs485-can/firmware.bin
+```
+
+**Step 2 — Get the MD5:**
+
+```bash
+md5sum .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin
+```
+
+**Step 3 — Upload to the firmware server:**
+
+```bash
+scp .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin \
+  user@twwp-iot.duckdns.org:/var/www/html/firmware/twwp-vX.X.X.bin
+```
+
+**Step 4 — Trigger the update via MQTT:**
+
+```bash
+mosquitto_pub \
+  -h twwp-iot.duckdns.org -p 8883 \
+  --capath /etc/ssl/certs \
+  -u YOUR_MQTT_USER -P YOUR_MQTT_PASS \
+  -t 'twwp/wh_001/cmd' \
+  -m '{"ota_url":"https://twwp-iot.duckdns.org/firmware/twwp-vX.X.X.bin","ota_md5":"<md5-from-step-2>"}'
+```
+
+`ota_md5` is optional but recommended — the node will reject the image if the hash doesn't match.
+
+**Monitor progress:**
+
+```bash
+mosquitto_sub \
+  -h twwp-iot.duckdns.org -p 8883 \
+  --capath /etc/ssl/certs \
+  -u YOUR_MQTT_USER -P YOUR_MQTT_PASS \
+  -t 'twwp/wh_001/#' -v
+```
+
+Watch `twwp/wh_001/ota_state` and `ota_progress_pct` in the heartbeat. The node reboots automatically on success.
+
+---
+
+### OTA via serial console (USB only)
+
+When connected via USB, the serial console also accepts OTA commands:
 
 ```text
-ota https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin
-ota https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin d41d8cd98f00b204e9800998ecf8427e
+ota https://twwp-iot.duckdns.org/firmware/twwp-vX.X.X.bin
+ota https://twwp-iot.duckdns.org/firmware/twwp-vX.X.X.bin <md5>
 ota_state
 ```
 
-| Command | What it does |
-|---|---|
-| `ota <url>` | Starts an HTTPS OTA update immediately. |
-| `ota <url> <md5>` | Starts an HTTPS OTA update and checks the downloaded firmware against the expected MD5 hash. |
-| `ota_state` | Prints current OTA state, progress percentage, last error, and active URL. |
+Note: the serial console input buffer is 128 bytes — very long URLs may be truncated. Use MQTT OTA for long URLs.
 
-`ota_state` is useful for checking whether the node is idle, downloading, validating, or failed.
-
-### MQTT OTA command
-
-Publish to the existing command topic:
-
-```text
-twwp/<node_id>/cmd
-```
-
-Example payload:
-
-```json
-{
-  "ota_url": "https://twwp-iot.duckdns.org/firmware/twwp-v0.2.0.bin",
-  "ota_md5": "d41d8cd98f00b204e9800998ecf8427e"
-}
-```
-
-`ota_md5` is optional but recommended. If present, it must be exactly 32 hexadecimal characters.
+---
 
 ### OTA status fields in heartbeat
 
-The status heartbeat now includes these OTA fields:
-
 | Field | Type | Meaning |
 |---|---|---|
-| `ota_state` | number | OTA state enum: `0=IDLE`, `1=DOWNLOADING`, `2=VERIFYING`, `3=APPLYING`, `4=SUCCESS`, `5=FAILED`. |
-| `ota_progress_pct` | number | Download progress percentage from `0` to `100`. |
-| `ota_error` | string | Last OTA error message. Present only when a failure has been recorded. |
+| `ota_state` | number | `0=IDLE`, `1=DOWNLOADING`, `2=VERIFYING`, `3=APPLYING`, `4=SUCCESS`, `5=FAILED` |
+| `ota_progress_pct` | number | Download progress 0–100% |
+| `ota_error` | string | Last error message (only present on failure) |
 
 ### Home Assistant OTA entities
 
-The node now publishes two diagnostic entities through MQTT discovery:
-
 | Entity | Purpose |
 |---|---|
-| `sensor.twwp_<id>_ota_state` | Shows the current OTA state code from the status heartbeat. |
-| `sensor.twwp_<id>_ota_progress` | Shows OTA download progress percentage. |
+| `sensor.twwp_<id>_ota_state` | Current OTA state code |
+| `sensor.twwp_<id>_ota_progress` | Download progress % |
 
-### ArduinoOTA notes
+### Rollback
 
-ArduinoOTA is enabled during normal idle operation. This is intended for local development uploads on the LAN, not internet-facing updates. If an MQTT-driven OTA is already active, ArduinoOTA handling is skipped until the OTA state returns to idle.
-
-### Important limit
-
-The serial console command buffer in [`serviceSerialConsole()`](src/main.cpp:131) is only 128 bytes long. Very long firmware URLs may be truncated when entered over USB serial. MQTT OTA is the safer path for long URLs.
+If the node crashes within 60 seconds of booting new firmware, it automatically rolls back to the previous partition. No action needed.
 
 Protected paths that `sdrm` refuses:
 
@@ -326,7 +366,9 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `session_last_id` | number | ID of the most recently completed session. |
 | `session_last_start_ts` | number | Unix timestamp when the last session started. |
 | `session_last_end_ts` | number | Unix timestamp when the last session ended. |
-| `session_last_dur_s` | number | Duration of the last session in seconds. |
+| `session_last_dur_s` | number | Total wall-clock duration of the last session in seconds. |
+| `session_last_flow_dur_s` | number | Seconds water was actually flowing during the last session (excludes idle gaps). |
+| `session_last_idle_s` | number | Idle gap time within the last session in seconds (`dur_s − flow_dur_s`). Zero for a normal single tap-on → tap-off event. |
 | `session_last_vol_out` | number | Volume through RO Output (sensor 1) during last session, in litres. |
 | `session_last_vol_in` | number | Volume through RO Input (sensor 2) during last session, in litres. |
 | `session_enabled` | bool | Whether session tracking is currently enabled. |
@@ -341,13 +383,87 @@ The node publishes a status message to `twwp/<node_id>/status` every 10 seconds 
 | `ota_progress_pct` | number | OTA download progress percentage. |
 | `ota_error` | string | Last OTA error message. Present only after a failed OTA. |
 | `waste_ratio_year` | number | Waste:pure ratio for this year. |
-| `session_last_start_ts` | number | Unix timestamp when the last session started. |
-| `session_last_end_ts` | number | Unix timestamp when the last session ended. |
-| `session_last_dur_s` | number | Duration of the last session in seconds. |
-| `session_last_vol_out` | number | Volume through RO Output (sensor 1) during last session, in litres. |
-| `session_last_vol_in` | number | Volume through RO Input (sensor 2) during last session, in litres. |
+| `supply_voltage` | number | Calibrated battery voltage in V (5-sample moving average). `0.0` if ADS1115 not found at boot. |
+| `supply_voltage_divider` | number | Raw ADS1115 input voltage at the divider midpoint, before the 4.0303x battery scaling. Useful for wiring/debug checks. |
+| `supply_voltage_pct` | number | Battery percentage (0–100) calculated from `voltage_v_min` and `voltage_v_max`. |
+| `supply_voltage_state` | string | `"Charging"`, `"Discharging"`, or `"Stable"` — derived from voltage trend over the last 60 s. |
+| `voltage_v_min` | number | Configured empty-battery voltage (V). Default 11.8. Persisted to NVS. |
+| `voltage_v_max` | number | Configured full-battery voltage (V). Default 12.6. Persisted to NVS. |
+| `voltage_cal_factor` | number | Voltage calibration multiplier. Default 1.0. Adjust to match a multimeter reading. Persisted to NVS. |
+| `valve_open` | bool | `true` when the relay is energised (valve open / LED on). |
+| `valve_auto` | bool | `true` = relay is in auto mode (flow-driven). `false` = manual MQTT override is active. |
 
 Note: period subtotals (today/week/month/year) reset correctly across RTC date boundaries. If the node is powered off across a boundary, the subtotals resume from the saved value for that day but reset on the next boundary. The lifetime total (`flow_total_*`) always survives reboots — it is persisted to `/config/flow_total.json` on the SD card every 60 seconds.
+
+## Battery Voltage Monitor (M2.5)
+
+### Hardware
+
+The voltage monitor uses an ADS1115 16-bit I²C ADC (address 0x48) with a 100 kΩ / 33 kΩ resistor voltage divider. The divider scales a 12V battery down to ~3V — safe for the ADS1115 input. The ADS1115 shares the I²C bus with the DS3231 RTC (GPIO9 SDA / GPIO3 SCL) with no conflict.
+
+Wiring summary:
+
+```
+12V battery + ──── R1 (100kΩ) ──┬──── A0 (ADS1115)
+                                 │
+                               C (100nF optional)
+                                 │
+                              R2 (33kΩ)
+                                 │
+                               GND ──── battery −
+ADS1115: VCC → 3.3V, GND → GND, SDA → GPIO9, SCL → GPIO3, ADDR → GND
+```
+
+### HA entities
+
+Three sensors and three config numbers appear automatically on the TWWP device card after the first MQTT connect:
+
+| Entity | Type | What it shows |
+|---|---|---|
+| Supply Voltage | sensor | Calibrated battery voltage in V after divider scaling and calibration factor (device_class=voltage) |
+| Battery | sensor | Battery percentage 0–100% (device_class=battery) |
+| Supply Voltage Divider | sensor (diagnostic) | Raw ADS1115 divider-node voltage. Around `3.1V` means the divider is seeing a roughly `12.5V` battery. |
+| Battery State | sensor | `Charging` / `Discharging` / `Stable` |
+| Battery Empty Voltage | number (config) | Voltage treated as 0% — default 11.8V, range 9–13V |
+| Battery Full Voltage | number (config) | Voltage treated as 100% — default 12.6V, range 12–16V |
+| Battery Voltage Cal Factor | number (config) | Multiplier applied after divider calculation — default 1.000 |
+
+All three config numbers persist to NVS across reboots. Changes take effect immediately — no reflash needed.
+
+### Calibration procedure
+
+1. Let the node run for at least 30 seconds so the moving average settles.
+2. Measure the actual battery voltage with a multimeter.
+3. Compare it to `supply_voltage` in the HA sensor or the heartbeat JSON.
+   If `supply_voltage_divider` is around `3.1V`, the scaled `supply_voltage` should be around `12.5V`.
+4. In HA, open **Battery Voltage Cal Factor** and adjust:
+   - If HA reads 12.4V and multimeter reads 12.6V: set cal factor to `1.016` (12.6 / 12.4)
+   - If HA reads 12.8V and multimeter reads 12.6V: set cal factor to `0.984`
+5. Repeat until HA reading is within ±0.05V of the multimeter.
+
+### Battery % configuration
+
+The percentage is a linear interpolation between `v_min` (0%) and `v_max` (100%). Lead-acid typical values:
+
+| Battery state | Lead-acid 12V |
+|---|---|
+| Full | 12.6–12.8V |
+| 50% | ~12.2V |
+| Empty (cut-off) | 11.8–12.0V |
+
+Set `Battery Empty Voltage` and `Battery Full Voltage` in HA to match your battery's datasheet or measured behaviour.
+
+### Charge state detection
+
+The node compares the current smoothed voltage reading to the reading from 60 seconds ago:
+
+- More than +0.05V in 60 s → **Charging**
+- More than −0.05V in 60 s → **Discharging**
+- Within ±0.05V → **Stable**
+
+This requires the node to have been running for at least 60 seconds before `Charging`/`Discharging` will appear. Until then the state shows `Stable`.
+
+---
 
 ## Time-Series Data Log
 
@@ -360,19 +476,19 @@ Every 60 seconds the node appends a row to:
 Each file starts with a header row on creation:
 
 ```text
-ts,flow_rate_1,flow_total_1,flow_today_1,flow_rate_2,flow_total_2,flow_today_2,leak
+ts,flow_rate_1,flow_total_1,flow_today_1,flow_rate_2,flow_total_2,flow_today_2,leak,supply_voltage
 ```
 
 Example rows:
 
 ```text
-1745700000,1.234,456.789,5.234,0.000,123.456,0.000,0
-1745700060,1.189,457.978,6.423,0.000,123.456,0.000,0
+1745700000,1.234,456.789,5.234,0.000,123.456,0.000,0,12.543
+1745700060,1.189,457.978,6.423,0.000,123.456,0.000,0,12.551
 ```
 
-Units: `ts` = Unix timestamp, flow values = litres, `leak` = 0 or 1.
+Units: `ts` = Unix timestamp, flow values = litres, `leak` = 0 or 1, `supply_voltage` = volts.
 
-The data log writes regardless of WiFi or MQTT status — it is the offline record. New columns will be added as sensors come online (pressure, water quality). Existing files keep their original columns.
+The data log writes regardless of WiFi or MQTT status — it is the offline record. Existing files keep their original columns — only new files created after the M2.5 firmware update will include `supply_voltage`.
 
 View or export via serial:
 
@@ -500,7 +616,21 @@ The firmware clamps below the first point and above the last point, and linearly
 
 ## Session Tracking
 
-A "session" is a continuous usage event at the RO tap. A session starts when flow on either sensor exceeds 0.05 L/min and ends 90 seconds after flow stops on both sensors. If flow resumes within the 90-second window, it extends the same session.
+A "session" is a continuous usage event at the RO tap. A session starts when flow on either sensor exceeds the flow threshold (default 0.05 L/min) and ends after the idle timeout expires (default 90 s) with no flow on either sensor. If flow resumes within the idle window, it extends the same session.
+
+### Timing fields
+
+Each session records three time values:
+
+| Field | Meaning |
+|---|---|
+| `dur_s` | Total wall-clock time from first flow to session end (includes any idle gaps). |
+| `flow_dur_s` | Seconds water was actually flowing — sum of all continuous flow segments. |
+| `idle_s` | `dur_s − flow_dur_s` — time the tap was off mid-session before the idle timeout fired. |
+
+For a normal tap-on → tap-off event, `flow_dur_s ≈ dur_s` and `idle_s = 0`. `idle_s` is non-zero only when the tap was briefly closed mid-session and the session was extended.
+
+### Session log
 
 When a session ends, the node publishes to `twwp/<node_id>/session` and appends a row to:
 
@@ -511,7 +641,7 @@ When a session ends, the node publishes to `twwp/<node_id>/session` and appends 
 Session log columns:
 
 ```
-session_id,start_ts,end_ts,duration_s,volume_out_L,volume_in_L,peak_rate_out,peak_rate_in
+session_id,start_ts,end_ts,duration_s,flow_duration_s,idle_time_s,volume_out_L,volume_in_L,peak_rate_out,peak_rate_in
 ```
 
 View via serial:
@@ -520,9 +650,55 @@ View via serial:
 sdcat /log/sessions.csv
 ```
 
-The last session fields also appear in the heartbeat status (`session_last_id`, `session_last_dur_s`, `session_last_vol_out`, `session_last_vol_in`) and are visible as diagnostic sensors on the main TWWP device card in HA.
+### Recent sessions in HA
+
+The last 10 sessions are published as a retained JSON array to `twwp/<node_id>/sessions_recent` and appear in HA as `sensor.twwp_wh_001_recent_sessions`. The full Lovelace dashboard at `docs/LOVELACE_DASHBOARD.yaml` includes a sessions view with the flex-table-card table — see the **Home Assistant Dashboard** section below.
+
+The last session fields also appear in the heartbeat status (`session_last_id`, `session_last_dur_s`, `session_last_flow_dur_s`, `session_last_idle_s`, `session_last_vol_out`, `session_last_vol_in`) and are visible as sensors on the main TWWP device card in HA.
 
 Session IDs survive reboots (persisted in NVS).
+
+## Valve / Relay Control
+
+The node controls a relay module on GPIO8 (`PIN_VALVE`). The relay module is active-low — GPIO `LOW` energises the coil (valve open / load on), GPIO `HIGH` de-energises it (valve closed / load off).
+
+Current hardware: 12V LED simulating a ball valve. Wired: relay VCC → board 5V, relay GND → GND, relay IN1 → GPIO8, relay COM/NO terminals in series with the 12V load.
+
+### Auto mode (default)
+
+By default the relay follows flow sensor 1. When `flow_rate_1` exceeds 0.05 L/min the relay opens; when flow drops to zero the relay closes. No MQTT command needed for normal operation.
+
+### Manual override via MQTT
+
+Publish to `twwp/<node_id>/cmd`:
+
+```json
+{"valve_open": true}
+```
+
+This opens the relay and disables auto mode. To close:
+
+```json
+{"valve_open": false}
+```
+
+To re-enable flow-driven auto mode:
+
+```json
+{"valve_auto": true}
+```
+
+### HA entity
+
+A `binary_sensor` named **TWWP \<id\> Valve** appears automatically on the device card (device_class=opening). It shows `Open` / `Closed` based on `valve_open` in the status heartbeat.
+
+Manual open/close can be triggered from HA using the Developer Tools → MQTT → publish to `twwp/<id>/cmd`.
+
+### Boot safety
+
+GPIO8 is driven `HIGH` (relay off) as the very first action in `actuatorValve_begin()`, before WiFi or flow sensors initialise. The relay will never energise spuriously at boot.
+
+---
 
 ## Flow Reset Commands
 
@@ -599,6 +775,104 @@ Check this file if you suspect messages were lost during a long offline period:
 ```text
 sdcat /log/crashes.txt
 ```
+
+## Home Assistant Dashboard
+
+The wh_001 node has a full Lovelace dashboard deployed at:
+
+```
+http://100.67.244.37:8123/wh-001
+```
+
+Source YAML: `docs/LOVELACE_DASHBOARD.yaml` — this is the source of truth. To redeploy after edits, run from the project root:
+
+```bash
+python3 << 'EOF'
+import asyncio, json, yaml, websockets
+
+TOKEN = open(os.path.expanduser("~/.twwp/INFRASTRUCTURE.md")).read()
+# Extract token from INFRASTRUCTURE.md and paste below:
+TOKEN = "YOUR_LONG_LIVED_TOKEN"
+
+async def main():
+    async with websockets.connect("ws://100.67.244.37:8123/api/websocket") as ws:
+        await ws.recv()
+        await ws.send(json.dumps({"type": "auth", "access_token": TOKEN}))
+        await ws.recv()
+        config = yaml.safe_load(open("docs/LOVELACE_DASHBOARD.yaml"))
+        await ws.send(json.dumps({"id": 1, "type": "lovelace/config/save", "url_path": "wh-001", "config": config}))
+        print(await ws.recv())
+
+asyncio.run(main())
+EOF
+```
+
+### Dashboard views
+
+| View | Contents |
+|---|---|
+| **Overview** | Live flow rates (RO output + input), today totals, leak/valve status, battery %, WiFi signal |
+| **Flow Data** | Both channels: current rate + today/week/month/year/lifetime total + reset buttons (today/week/month/year/all) |
+| **Sessions** | flex-table-card last 10 sessions table, last session summary, session enable switch, idle timeout + flow threshold sliders |
+| **System** | Network (SSID/IP/signal/uptime/restart-wifi), power + battery calibration, K factors, OTA state, factory reset |
+
+### Custom frontend resource
+
+`flex-table-card` v1.4 is installed at:
+
+```
+/home/kenny/projects/homeassistant/config/www/flex-table-card.js
+```
+
+It is registered as a Lovelace module resource (`/local/flex-table-card.js`). Do not delete this file — the Sessions view depends on it.
+
+---
+
+## AI Tool Access — Credentials and Server Updates
+
+Claude Code, Codex, and Roo Code can all make direct changes to the HA server and firmware infrastructure via SSH, provided the credentials below are available at session start.
+
+### What each tool can do with SSH access
+
+| Tool | Firmware | HA server (SSH) | HA UI |
+|---|---|---|---|
+| Claude Code | Build, flash, serial monitor | SSH in, edit configs, restart containers | Via browser if given a long-lived token |
+| Codex | Build, flash | SSH in, edit configs | Not directly |
+| Roo Code | Build, flash, serial monitor | SSH in, edit configs | Not directly |
+
+### HA server SSH credentials
+
+- **Host:** `100.67.244.37` (Tailscale IP)
+- **User:** `kenny`
+- **Auth:** SSH key — key is already loaded on this machine, no password needed
+- **Sudo password:** stored in `~/.twwp/INFRASTRUCTURE.md` (never in git)
+
+The SSH key auth works without a password. The sudo password is only needed for privileged operations (e.g. restarting Docker containers or editing system config files).
+
+### How an AI tool accesses the server
+
+1. The tool runs `ssh kenny@100.67.244.37 '<command>'` directly — no interactive session needed.
+2. For Docker/container restarts: `ssh kenny@100.67.244.37 'echo <sudo_pass> | sudo -S docker restart homeassistant'`
+3. For HA config edits: SSH into the server, edit files under `/home/kenny/projects/homeassistant/`, then restart the container.
+
+### Long-lived HA API token
+
+A long-lived HA token is stored in `~/.twwp/INFRASTRUCTURE.md` under the Home Assistant section. It allows tools to call the HA REST API directly — read states, trigger services, reload config — without SSH.
+
+Example usage:
+
+```bash
+curl -s -H "Authorization: Bearer <token>" http://100.67.244.37:8123/api/states | jq '.[].entity_id'
+```
+
+### What to hand the AI at session start
+
+Tell the tool:
+> "SSH to kenny@100.67.244.37 — key auth works. Sudo password is in ~/.twwp/INFRASTRUCTURE.md."
+
+That is sufficient for full server access. No other credential setup is needed unless the sudo password has changed.
+
+---
 
 ## Useful Troubleshooting Notes
 

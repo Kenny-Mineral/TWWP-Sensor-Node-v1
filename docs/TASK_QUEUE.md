@@ -72,6 +72,7 @@ K value loaded from `/config/node.json` (`flow.k_factor_1`, `flow.k_factor_2`) �
 - [x] Create `docs/MQTT_TOPIC_MAP.md` with all current topics.
 - [x] Update `docs/PIN_ALLOCATION.md` — mark GPIO4/5 confirmed for flow sensors.
 - [x] **Flow sensor firmware improvements** — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing (configurable 1–20 samples), uint64_t raw pulse totals as authoritative volume source, configurable debounce (100–10000 µs) per channel, NVS + SD persistence of raw pulses, HA discovery for diagnostics (`pulses_raw`, `k_applied`, `flow_avg_window`) and config entities (K-table text, debounce number, avg window number), backward-compatible with single K-factor config. See [`plans/flow-sensor-improvements.md`](plans/flow-sensor-improvements.md).
+- [x] **Session timing fields** — `flow_dur_s` (actual flow time, excludes idle gaps) and `idle_s` (tap-off gaps within session) added to session_flow driver, all session payloads (MQTT event, sessions_recent array, status heartbeat), HA discovery sensors, and SD sessions.csv log. HA Markdown card template provided for session list display.
 
 ---
 
@@ -86,16 +87,32 @@ No DS18B20 — temperature comes from YiErYi 3788 RS485 sensor (M5). Pressure se
 
 ---
 
+## M2.5 — 12V Battery Voltage Monitor ✓ DONE
+
+Hardware: ADS1115 16-bit I²C ADC (0x48) + 100kΩ/33kΩ voltage divider. Shares I²C bus with DS3231 on GPIO9/GPIO3.
+
+- [x] Confirm hardware: ADS1115 + 100kΩ/33kΩ divider. Divider ratio = 4.0303. GAIN_ONE (±4.096V, 0.125 mV/LSB).
+- [x] Create `src/sensor_voltage.{h,cpp}` — `sensorVoltage_begin/loop/getVoltageV/getPercentPct/getState/setVMin/setVMax/setCalFactor`. NVS namespace `"voltage"` (keys: v_min 11.8, v_max 12.6, cal 1.0).
+- [x] 5-sample moving average for noise suppression. 12-slot ring buffer (60 s history) for charge state detection (±0.05 V/60 s threshold).
+- [x] Add `adafruit/Adafruit ADS1X15 @ ^2.5.0` to `platformio.ini`.
+- [x] HA discovery: `supply_voltage` (V, device_class=voltage), `supply_voltage_pct` (%, device_class=battery), `supply_voltage_state` (Charging/Discharging/Stable). Config numbers: v_min, v_max, cal_factor — all adjustable from HA without reflash.
+- [x] Add `supply_voltage`, `supply_voltage_pct`, `supply_voltage_state`, `voltage_v_min`, `voltage_v_max`, `voltage_cal_factor` to heartbeat JSON.
+- [x] MQTT cmd: `set_v_min`, `set_v_max`, `set_voltage_cal` — all persisted to NVS.
+- [x] Add `supply_voltage` column to `/data/YYYY-MM-DD.csv` time-series log.
+- [x] Update `include/pins.h` — note ADS1115 @ 0x48 sharing GPIO9/GPIO3.
+
+---
+
 ## M3 — Actuator command channel
 
-Actuator not yet purchased — solenoid valve or motorised ball valve TBD.
+Valve type not yet finalised — currently using a 12V LED + relay module to simulate. Driver is live. **Note:** LED is on NC terminal — driver currently inverted (LOW=relay on=LED off). Revert `actuator_valve.cpp` HIGH/LOW when moving to NO terminal or real valve.
 
-- [ ] Confirm actuator type (solenoid valve or motorised ball valve) and purchase.
-- [ ] Document driver circuit in `docs/ACTUATOR_DRIVER.md` once type confirmed.
-- [ ] Replace `actuator_solenoid_stub.{h,cpp}`.
-- [ ] MQTT command: parse `{"actuator":"open"|"close"}` on `twwp/<id>/cmd`.
-- [ ] Safety: auto-close after N minutes if no heartbeat/confirmation, configurable in `node.json`.
-- [ ] Update `docs/COMPONENTS.md` with actuator model + URL.
+- [ ] Confirm final valve type (motorised ball valve or solenoid) and purchase.
+- [ ] Update `docs/COMPONENTS.md` with valve model + URL once purchased.
+- [ ] Document final driver circuit in `docs/ACTUATOR_DRIVER.md` once valve type confirmed.
+- [x] Replace `actuator_solenoid_stub.{h,cpp}` → `actuator_valve.{h,cpp}`. Active-low relay driver on GPIO8, auto-triggered by flow sensor 1 via `FLOW_ACTIVE_THRESHOLD_LPM`. MQTT `valve_open`/`valve_auto` cmd keys. HA `binary_sensor` discovery. `PIN_VALVE` in `pins.h`.
+- [x] MQTT command channel for valve: `{"valve_open": true/false}` and `{"valve_auto": true/false}` on `twwp/<id>/cmd`.
+- [ ] Safety: auto-close after configurable idle timeout if no flow activity (e.g. 10 min). Configurable in `node.json`, default off.
 
 ---
 
@@ -104,12 +121,23 @@ Actuator not yet purchased — solenoid valve or motorised ball valve TBD.
 - [x] **Decision:** MQTT-driven OTA (internet) + ArduinoOTA (LAN) — both supported.
 - [x] MQTT-driven: subscribe `twwp/<id>/cmd` for `{"ota_url": "...", "ota_md5": "..."}`, fetch HTTPS with `WiFiClientSecure`, write with `Update.h`.
 - [x] MQTT progress published to `twwp/<id>/ota_state` (retained) every 2s during download.
-- [x] Rollback: NVS `ota_boot_pending` flag checked on boot; if crash detected within 60s, `esp_ota_set_boot_partition` to known-good partition.
+- [x] Rollback: NVS `ota_boot_pending` flag checked on boot; if crash detected within 60s, `esp_ota_mark_app_invalid_rollback_and_reboot()` triggers IDF bootloader rollback to previous partition.
 - [x] Serial console: `ota <url> [md5]` and `ota_state` commands.
 - [x] ArduinoOTA: enabled in `netOta_loop()` when state = IDLE, hostname `twwp-<NODE_ID>`.
 - [x] HA discovery: `sensor.twwp_<id>_ota_state` and `sensor.twwp_<id>_ota_progress` diagnostic entities.
 - [x] Server: Hetzner nginx serves `https://twwp-iot.duckdns.org/firmware/` with TLS.
 - [x] Documentation: USER_OPERATIONS, MQTT_TOPIC_MAP, FIRMWARE_ARCHITECTURE updated.
+- [x] **`platformio.ini` OTA env fix** — `[env:ota]` `extends` directive corrected to `env:waveshare-esp32-s3-rs485-can` (was missing `env:` prefix causing `UndefinedEnvPlatformError`). `upload_port` set to direct IP `192.168.20.18` (mDNS `twwp-wh_001.local` does not resolve on this network).
+
+## Standalone 12V boot fix ✓ DONE (2026-05-04)
+
+**Root cause:** `ARDUINO_USB_CDC_ON_BOOT=1` + `ARDUINO_USB_MODE=1` puts Serial into HWCDC mode. Without a USB host, every `Serial.println()` in setup() blocks indefinitely. Accumulated block time caused the hardware watchdog to fire before setup() completed — device never came online on 12V-only power.
+
+- [x] Added `Serial.setTxTimeoutMs(0)` in `src/main.cpp` immediately after `Serial.begin(115200)`. Makes HWCDC TX non-blocking: writes drop silently rather than blocking when no USB host is present.
+- [x] Reduced `delay(1000)` → `delay(500)` after Serial.begin (minor, boot is faster).
+- [x] USB cable flash succeeded (2026-05-04). Also fixed `lib_deps` being in `[env:ota]` instead of base env — base env build was missing all third-party libraries.
+- [x] Verify: unplug USB, confirm HA stays green on 12V-only. ✓ Confirmed 2026-05-05.
+- [ ] **Optional:** Fix corrupted NVS `k_factor_2` (stored as 2000, should be 20700). Send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`. Firmware already uses correct value from k-table so this is low priority.
 
 ---
 
