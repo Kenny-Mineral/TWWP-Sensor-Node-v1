@@ -1,0 +1,580 @@
+# TWWP wh_001 — Lovelace Dashboard
+# Deployed to: HA storage key "lovelace.wh_001"
+# Entity IDs verified against live HA state 2026-05-05
+
+views:
+
+  ##############################################################
+  # VIEW 1 — OVERVIEW
+  ##############################################################
+  - type: sections
+    title: Overview
+    icon: mdi:water
+    max_columns: 4
+    badges:
+      - type: entity
+        entity: sensor.twwp_wh_001_twwp_wh_001_running_time
+        name: Uptime
+    sections:
+
+      # Current flow
+      - type: grid
+        column_span: 2
+        title: Live Flow
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_rate_1
+            name: RO Output Rate
+            icon: mdi:waves-arrow-right
+            color: primary
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_rate_2
+            name: RO Input Rate
+            icon: mdi:waves-arrow-left
+            color: blue
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_today_1
+            name: Output Today
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_today_2
+            name: Input Today
+            grid_options:
+              columns: 6
+              rows: auto
+
+      # Status
+      - type: grid
+        column_span: 1
+        title: Status
+        cards:
+          - type: tile
+            entity: binary_sensor.twwp_wh_001_twwp_wh_001_leak
+            name: Moisture Sensor
+            color: accent
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: binary_sensor.twwp_wh_001_input_leak_suspect
+            name: Input Leak Suspect
+            color: accent
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: binary_sensor.twwp_wh_001_output_leak_suspect
+            name: Output Leak Suspect
+            color: accent
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: binary_sensor.twwp_wh_001_twwp_wh_001_valve
+            name: Valve
+            grid_options:
+              columns: full
+              rows: auto
+
+      # Power & Network
+      - type: grid
+        column_span: 1
+        title: Power & Network
+        background:
+          color: blue-grey
+          opacity: 7
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_battery
+            name: Battery
+            icon: mdi:battery
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_supply_voltage
+            name: Supply Voltage
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: binary_sensor.twwp_wh_001_twwp_wh_001_wifi_status
+            name: WiFi
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_wifi_signal_db
+            name: Signal
+            grid_options:
+              columns: full
+              rows: auto
+
+  ##############################################################
+  # VIEW 2 — FLOW DATA
+  ##############################################################
+  - type: sections
+    title: Flow Data
+    icon: mdi:counter
+    max_columns: 4
+    sections:
+
+      # RO Output channel 1
+      - type: grid
+        column_span: 2
+        title: RO Output (HS06PE — Channel 1)
+        background:
+          color: light-blue
+          opacity: 7
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_rate_1
+            name: Current Rate
+            icon: mdi:waves-arrow-right
+            color: primary
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_today_1
+            name: Today
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_week_1
+            name: This Week
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_month_1
+            name: This Month
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_year_1
+            name: This Year
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_total_1
+            name: Lifetime Total
+            grid_options:
+              columns: full
+              rows: auto
+          - type: heading
+            heading: Reset Output Totals
+            heading_style: subtitle
+          - type: tile
+            entity: button.ro_output_reset_today
+            name: Reset Today
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_output_reset_this_week
+            name: Reset Week
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_output_reset_this_month
+            name: Reset Month
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_output_reset_this_year
+            name: Reset Year
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_output_reset_all_data
+            name: Reset All Data
+            icon: mdi:delete-forever
+            color: red
+            grid_options:
+              columns: full
+              rows: auto
+
+      # RO Input channel 2
+      - type: grid
+        column_span: 2
+        title: RO Input (HS06PS — Channel 2)
+        background:
+          color: light-blue
+          opacity: 7
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_rate_2
+            name: Current Rate
+            icon: mdi:waves-arrow-left
+            color: blue
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_today_2
+            name: Today
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_week_2
+            name: This Week
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_month_2
+            name: This Month
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_year_2
+            name: This Year
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_flow_total_2
+            name: Lifetime Total
+            grid_options:
+              columns: full
+              rows: auto
+          - type: heading
+            heading: Reset Input Totals
+            heading_style: subtitle
+          - type: tile
+            entity: button.ro_input_reset_today
+            name: Reset Today
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_input_reset_this_week
+            name: Reset Week
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_input_reset_this_month
+            name: Reset Month
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_input_reset_this_year
+            name: Reset Year
+            icon: mdi:calendar-refresh
+            color: red
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: button.ro_input_reset_all_data
+            name: Reset All Data
+            icon: mdi:delete-forever
+            color: red
+            grid_options:
+              columns: full
+              rows: auto
+
+  ##############################################################
+  # VIEW 3 — SESSIONS
+  ##############################################################
+  - type: sections
+    title: Sessions
+    icon: mdi:history
+    max_columns: 4
+    sections:
+
+      # Sessions table
+      - type: grid
+        column_span: 3
+        title: Last 10 Sessions
+        cards:
+          - type: custom:flex-table-card
+            title: Tap Sessions
+            entities:
+              include: sensor.twwp_wh_001_recent_sessions
+            columns:
+              - name: Date
+                attr_as_list: sessions
+                modify: >
+                  new Date(x.start_ts * 1000).toLocaleDateString('en-AU',
+                    {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+              - name: Session
+                modify: >
+                  x.dur_s >= 60
+                    ? Math.floor(x.dur_s/60) + 'm ' + (x.dur_s % 60) + 's'
+                    : x.dur_s + 's'
+              - name: Flow
+                modify: >
+                  x.flow_dur_s >= 60
+                    ? Math.floor(x.flow_dur_s/60) + 'm ' + (x.flow_dur_s % 60) + 's'
+                    : x.flow_dur_s + 's'
+              - name: Idle
+                modify: >
+                  (x.idle_s || 0) > 0
+                    ? ((x.idle_s >= 60)
+                        ? Math.floor(x.idle_s/60) + 'm ' + (x.idle_s % 60) + 's'
+                        : x.idle_s + 's')
+                    : '—'
+              - name: Out (L)
+                modify: parseFloat(x.vol_out).toFixed(3)
+              - name: In (L)
+                modify: parseFloat(x.vol_in).toFixed(3)
+              - name: Peak Out
+                modify: parseFloat(x.peak_out).toFixed(2) + ' L/m'
+              - name: Peak In
+                modify: parseFloat(x.peak_in).toFixed(2) + ' L/m'
+            css:
+              table: "font-size: 0.85em;"
+
+      # Last session + settings
+      - type: grid
+        column_span: 1
+        title: Last Session & Settings
+        cards:
+          - type: heading
+            heading: Last Session
+            heading_style: subtitle
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_id
+            name: Session ID
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_duration
+            name: Duration (s)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_flow_time
+            name: Flow Time (s)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_idle_time
+            name: Idle Time (s)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_volume_out
+            name: Volume Out (L)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_last_session_volume_in
+            name: Volume In (L)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: heading
+            heading: Session Settings
+            heading_style: subtitle
+          - type: tile
+            entity: switch.twwp_wh_001_session_tracking
+            name: Session Tracking
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_session_idle_timeout
+            name: Idle Timeout (s)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_flow_detection_threshold
+            name: Flow Threshold (L/min)
+            grid_options:
+              columns: full
+              rows: auto
+
+  ##############################################################
+  # VIEW 4 — SYSTEM
+  ##############################################################
+  - type: sections
+    title: System
+    icon: mdi:cog
+    max_columns: 4
+    sections:
+
+      # Network
+      - type: grid
+        column_span: 2
+        title: Network & Node
+        background:
+          color: blue-grey
+          opacity: 7
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_wifi_ssid
+            name: SSID
+            icon: mdi:wifi
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_wifi_signal_db
+            name: Signal (dB)
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_wifi_signal
+            name: Signal (%)
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_ip_address
+            name: IP Address
+            icon: mdi:ip
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_wifi_bssid
+            name: BSSID
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_running_time
+            name: Uptime
+            icon: mdi:clock-outline
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: button.twwp_wh_001_twwp_wh_001_restart_wifi
+            name: Restart WiFi
+            icon: mdi:wifi-refresh
+            grid_options:
+              columns: full
+              rows: auto
+
+      # Power
+      - type: grid
+        column_span: 1
+        title: Power
+        cards:
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_battery
+            name: Battery %
+            icon: mdi:battery
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_battery_state
+            name: Battery State
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_supply_voltage
+            name: Supply Voltage
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_battery_empty_voltage
+            name: Empty Voltage (V)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_battery_full_voltage
+            name: Full Voltage (V)
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_battery_voltage_cal_factor
+            name: Cal Factor
+            grid_options:
+              columns: full
+              rows: auto
+
+      # Calibration + OTA + danger
+      - type: grid
+        column_span: 1
+        title: Calibration & OTA
+        cards:
+          - type: tile
+            entity: number.twwp_wh_001_twwp_wh_001_k_factor_1
+            name: K Factor — Output
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_twwp_wh_001_k_factor_2
+            name: K Factor — Input
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: number.twwp_wh_001_flow_average_window
+            name: Flow Avg Window
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_ota_state
+            name: OTA State
+            grid_options:
+              columns: full
+              rows: auto
+          - type: tile
+            entity: sensor.twwp_wh_001_twwp_wh_001_ota_progress
+            name: OTA Progress
+            grid_options:
+              columns: full
+              rows: auto
+          - type: heading
+            heading: Danger Zone
+            heading_style: subtitle
+          - type: tile
+            entity: button.twwp_wh_001_factory_reset_all_flow_data
+            name: Factory Reset All Flow Data
+            icon: mdi:nuke
+            color: red
+            grid_options:
+              columns: full
+              rows: auto
