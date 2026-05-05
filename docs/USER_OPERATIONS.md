@@ -830,10 +830,12 @@ It is registered as a Lovelace module resource (`/local/flex-table-card.js`). Do
 
 ## Monitoring Stack — InfluxDB + Grafana
 
-Long-term time-series analytics for TWWP. Runs on the Hetzner VPS alongside HA and Mosquitto.
+Long-term time-series analytics for TWWP. Running on the Hetzner VPS alongside HA and Mosquitto.
+
+**Status: LIVE** (deployed 2026-05-05). InfluxDB receiving data. Grafana accessible.
 
 **Local project:** `/home/kenny/twwp-monitoring/`
-**Server location (after deploy):** `/home/kenny/projects/twwp-monitoring/`
+**Server location:** `/home/kenny/projects/twwp-monitoring/`
 
 ### Access Grafana
 
@@ -841,56 +843,32 @@ Long-term time-series analytics for TWWP. Runs on the Hetzner VPS alongside HA a
 http://100.67.244.37:3000
 ```
 
-(Tailscale only — not publicly exposed. Login: admin / see `.env` on server.)
+Tailscale only — not publicly exposed. Login: `admin` / password in `.env` on server (`GRAFANA_ADMIN_PASSWORD`).
 
-### First-time deployment
+### HA → InfluxDB integration
 
-Follow `docs/SETUP.md` in the twwp-monitoring project. Summary:
+**Managed entirely via the HA UI** — Settings → Integrations → InfluxDB → `twwp_ha (http://localhost:8181)`.
 
-```bash
-ssh -i ~/.ssh/hetzner_ed25519 root@91.98.133.15
-git clone <repo> /home/kenny/projects/twwp-monitoring
-cd /home/kenny/projects/twwp-monitoring
-cp .env.example .env && nano .env
-ufw deny 8181
-ufw allow from 172.17.0.0/16 to any port 8181
-ufw deny 3000 && ufw reload
-docker compose up -d
-docker exec -it twwp-influxdb influxdb3 create token --admin
-# Paste token into .env and HA secrets.yaml, then:
-docker compose restart grafana
-docker restart homeassistant
-```
+Connection settings (URL, token, org, bucket) live in the HA UI config entry only.
 
-### Update the stack
+> ⚠️ **DO NOT** add `influxdb:` to `configuration.yaml`. Even with only `include:` entities listed, the YAML key silently fails schema validation and blocks the entire InfluxDB component from loading — including the UI config entry. No errors are logged; data just stops. The fix is to remove the line entirely.
 
-```bash
-ssh -i ~/.ssh/hetzner_ed25519 root@91.98.133.15
-cd /home/kenny/projects/twwp-monitoring
-git pull && docker compose pull && docker compose up -d
-```
-
-### HA → InfluxDB config
-
-Lives at `ha-config/influxdb.yaml` in the twwp-monitoring project. Deployed to
-`/home/kenny/projects/homeassistant/config/influxdb.yaml` on the server.
-Included from `configuration.yaml` as `influxdb: !include influxdb.yaml`.
-
-The token lives in HA `secrets.yaml` as `influxdb_token`.
+The `ha-config/influxdb.yaml` file in the local twwp-monitoring repo is **documentation only**. It must not be referenced from `configuration.yaml`.
 
 ### What gets written to InfluxDB
 
-All live TWWP entities via HA's built-in influxdb integration (v2 write API):
-flow rates and totals (both channels), today/week/month/year subtotals, leak state,
-valve state, battery voltage + %, WiFi RSSI, session data.
+All HA entity state changes are written (no entity filter active — all entities go in). TWWP entities written include:
+- Flow rates and totals (both channels), today/week/month/year subtotals
+- Leak state, valve state
+- Battery voltage + %, charge state
+- WiFi RSSI
+- Session data (last volume, duration)
 
-Water quality (pH, ORP, EC, temp × 3 zones) is pre-configured in the entity include
-list — HA will start writing these automatically when M5 firmware goes live.
+When M5 firmware goes live, the 12 water quality entities (`wq_pre_ro_*`, `wq_post_ro_*`, `wq_remin_*`) will start flowing automatically — HA will write them as soon as MQTT discovery publishes.
 
 ### Water quality zones (M5 — pending hardware)
 
-Three RS485-3177 sensors: pre-RO filter, post-RO filter, remineralised.
-Entity naming (locked in — Grafana and InfluxDB are already configured):
+Three RS485-3177 sensors: pre-RO filter, post-RO filter, remineralised. Entity naming locked in:
 
 ```
 sensor.wh_001_wq_pre_ro_ph / orp / ec / temp
@@ -898,18 +876,30 @@ sensor.wh_001_wq_post_ro_ph / orp / ec / temp
 sensor.wh_001_wq_remin_ph / orp / ec / temp
 ```
 
-Grafana Water Quality view panels exist now — they show "No data" until M5 firmware
-publishes MQTT discovery payloads.
-
 ### Verify InfluxDB is receiving data
 
+Open Grafana → Explore → InfluxDB-TWWP → click "select measurement". If TWWP measurements appear in the dropdown, data is flowing.
+
+Or via SSH:
 ```bash
-ssh -i ~/.ssh/hetzner_ed25519 root@91.98.133.15
-docker exec -it twwp-influxdb influxdb3 query \
-  --database twwp_ha \
-  --token <your-token> \
-  "SELECT * FROM sensor_wh_001_flow_rate_1 LIMIT 5"
+ssh kenny@100.67.244.37
+docker logs twwp-influxdb --since 5m 2>&1 | grep write
 ```
+
+### Update the stack
+
+```bash
+ssh kenny@100.67.244.37
+cd /home/kenny/projects/twwp-monitoring
+git pull && docker compose pull && docker compose up -d
+```
+
+### InfluxDB token
+
+Token is stored in:
+- Server: `/home/kenny/projects/twwp-monitoring/.env` → `INFLUXDB_TOKEN`
+- HA: `/home/kenny/projects/homeassistant/config/secrets.yaml` → `influxdb_token`
+- Grafana: auto-injected at startup via `INFLUXDB_TOKEN` env var
 
 ---
 
