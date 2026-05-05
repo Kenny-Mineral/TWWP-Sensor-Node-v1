@@ -66,33 +66,34 @@ Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 
 ## Last done
 
-### Session 2026-05-05 — InfluxDB 3 Core + Grafana monitoring stack
+### Session 2026-05-05 — Monitoring stack deployed + InfluxDB data flowing
 
-**Created `/home/kenny/twwp-monitoring/`** — new git repo (separate from firmware) for the server-side monitoring stack. Committed to `main`.
+**Deployed:** InfluxDB 3 Core + Grafana running on Hetzner VPS via `docker compose up -d`. Both containers healthy. Grafana accessible at `http://100.67.244.37:3000` (Tailscale).
 
-**Stack:** InfluxDB 3 Core + Grafana in docker-compose on the Hetzner VPS (co-located with HA + Mosquitto). InfluxDB binds to `0.0.0.0:8181` (UFW blocks external); Grafana binds to `127.0.0.1:3000` (Tailscale access via `http://100.67.244.37:3000`).
+**InfluxDB receiving data:** HA confirmed writing — 85 events on first flush, ~2 events every 10 s thereafter. Grafana Explore shows all TWWP entity measurements in the dropdown.
 
-**HA integration config** (`ha-config/influxdb.yaml`) — writes all live TWWP entities via v2 write API (InfluxDB 3 supports v1/v2 compat). Entity list includes 12 water quality stubs (pre-RO / post-RO / remineralised: pH, ORP, EC, temp) — HA silently skips missing entities until M5 firmware publishes MQTT discovery.
+**Key issues resolved this session:**
+1. **InfluxDB data dir permissions** — container runs as uid 1500; host dir was kenny-owned. Fix: `sudo chown -R 1500:1500 influxdb/data/`.
+2. **HA host-network mode** — HA container uses `network_mode: host`, cannot join Docker networks. Fix: expose InfluxDB on `127.0.0.1:8181`; use `host: localhost` in HA config.
+3. **Double-nested YAML key** — `influxdb.yaml` had a top-level `influxdb:` key while being included as `influxdb: !include influxdb.yaml`. Fix: removed top-level key, dedented content.
+4. **YAML schema validation blocks component (root cause)** — HA deprecated YAML connection settings (host/port/token/etc.) and auto-migrated them to a UI config entry. Keeping `influxdb: !include influxdb.yaml` in `configuration.yaml` with only `include:` entities left caused silent YAML schema validation failure, blocking the entire influxdb component including the UI config entry. No errors logged — just silence. Fix: **removed `influxdb: !include influxdb.yaml` from `configuration.yaml` entirely.** InfluxDB integration is now 100% UI-managed.
+5. **Grafana port binding** — was `127.0.0.1:3000`; Tailscale traffic arrives on `tailscale0` not loopback. Fix: changed to `0.0.0.0:3000` in docker-compose.
 
-**Three-zone water quality schema designed** — zone naming locked in: `pre_ro`, `post_ro`, `remin`. Entity naming convention and M5 firmware field contract documented in `docs/SETUP.md` and `MQTT_TOPIC_MAP.md`. Grafana Water Quality view planned with placeholder panels per zone.
+**Entity filtering:** The HA influxdb YAML `include:` list is no longer active (YAML removed). All HA entities now write to InfluxDB. Filter by entity name in Grafana queries. The `ha-config/influxdb.yaml` file in the local repo is documentation only — do not reference it from `configuration.yaml`.
 
-**Grafana datasource auto-provisioned** — InfluxQL mode, bearer token auth via custom HTTP header. Dashboard provider registered; dashboards to be created via UI and committed as JSON.
-
-**Updated:** INFRASTRUCTURE.md (InfluxDB + Grafana entries), TASK_QUEUE.md (monitoring milestone), MQTT_TOPIC_MAP.md (wq_* M5 fields), FIRMWARE_ARCHITECTURE.md (multi-zone SensorData).
-
-**Not yet done (deployment):** Stack not yet deployed to server — follow `docs/SETUP.md` to deploy, generate InfluxDB token, wire up HA.
+**Persistent memory notes added:** server file write approach (write to /tmp → docker cp), HA influxdb YAML config gotcha, Tailscale IP + SSH user confirmed.
 
 ## In progress
-- Nothing active.
+- Firmware: uncommitted changes in `src/`, `include/`, `platformio.ini`, `docs/` from prior sessions (M3 valve driver, M2.5 voltage sensor, session flow improvements). Not related to this session's work.
 
 ## Next step
-- Deploy monitoring stack to server: `ssh root@91.98.133.15`, clone twwp-monitoring repo, `docker compose up -d`, create InfluxDB token, configure HA. Full steps in `/home/kenny/twwp-monitoring/docs/SETUP.md`.
-- After deployment: create Grafana dashboards (Overview, Flow History, Water Quality, System) via UI, export JSON, commit to repo.
-- Remaining M3: confirm final valve/actuator type and purchase; add auto-close safety timeout.
-- Optional: fix corrupted NVS k_factor_2 — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
+- Create Grafana dashboards via UI: Overview (flow rates, leak, valve, battery), Flow History, Water Quality (3-zone — placeholder until M5), System (WiFi, OTA, uptime).
+- Export dashboard JSON and commit to `grafana/provisioning/dashboards/` in the twwp-monitoring repo.
+- M3: confirm final valve type and purchase. Add auto-close safety timeout to `actuator_valve.cpp`.
+- Optional: fix corrupted NVS `k_factor_2` — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-05-05
+2026-05-05 22:45

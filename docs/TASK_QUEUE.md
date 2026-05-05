@@ -150,8 +150,10 @@ Server-side analytics layer. Local project: `/home/kenny/twwp-monitoring/`. Not 
 - [x] HA integration config (`ha-config/influxdb.yaml`) — all live TWWP entities + 12 water quality stubs.
 - [x] Three-zone water quality schema locked in: `pre_ro`, `post_ro`, `remin` — entity names and M5 firmware field contract documented.
 - [x] Deploy guide: `docs/SETUP.md` with UFW rules, token creation, HA wiring steps.
-- [ ] **Deploy to server** — clone repo, `docker compose up -d`, generate InfluxDB token, configure HA. Follow `docs/SETUP.md`.
-- [ ] Verify HA writing: `docker logs homeassistant | grep influx` + InfluxDB query confirms data arriving.
+- [x] **Deploy to server** — `docker compose up -d` on Hetzner VPS. InfluxDB 3 Core + Grafana running. Token generated, HA wired up.
+- [x] Verify HA writing — InfluxDB confirmed receiving data (85 events on first flush, ~2 events/10s thereafter). Grafana Explore shows TWWP measurements.
+- [x] **Critical fix** — `influxdb: !include influxdb.yaml` in `configuration.yaml` silently blocks entire influxdb component (YAML schema validation fails without connection keys). Removed the include line entirely. InfluxDB integration is now 100% UI-managed (Settings → Integrations → InfluxDB). `ha-config/influxdb.yaml` kept as documentation only — do NOT reference it from configuration.yaml.
+- [x] Grafana port binding fixed — changed from `127.0.0.1:3000` to `0.0.0.0:3000` so Tailscale traffic can reach it. Accessible at `http://100.67.244.37:3000`.
 - [ ] Create Grafana dashboards via UI: Overview, Flow History, Water Quality (3-zone), System.
 - [ ] Export dashboard JSON and commit to `grafana/provisioning/dashboards/`.
 
