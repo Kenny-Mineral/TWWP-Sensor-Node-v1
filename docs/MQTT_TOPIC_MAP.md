@@ -14,8 +14,8 @@ QoS is 0 for all topics. Retain and direction as noted.
 | `twwp/<id>/alert` | no | node → broker | Leak state-change events (`LEAK_STATE` type). |
 | `twwp/<id>/log` | no | node → broker | SD failure notifications (rate-limited 1/min). |
 | `twwp/<id>/lwt` | yes | node → broker | Last-will / availability: `online` when connected, broker publishes `offline` on unexpected disconnect. |
-| `twwp/<id>/session` | no | node → broker | Session-end event. Published when the idle timeout expires. JSON payload with session_id, start_ts, end_ts, duration_s, volume_out_L, volume_in_L, peak_rate_out, peak_rate_in. |
-| `twwp/<id>/sessions_recent` | yes | node → broker | Retained JSON array of the last 10 sessions (newest-first). Republished after each session ends and on MQTT reconnect. |
+| `twwp/<id>/session` | no | node → broker | Session-end event. Published when the idle timeout expires. JSON payload with session_id, start_ts, end_ts, duration_s, flow_duration_s, idle_time_s, volume_out_L, volume_in_L, peak_rate_out, peak_rate_in. |
+| `twwp/<id>/sessions_recent` | yes | node → broker | Retained JSON array of the last 10 sessions (newest-first). Each session object includes: id, start_ts, end_ts, dur_s, flow_dur_s, idle_s, vol_out, vol_in, peak_out, peak_in. Republished after each session ends and on MQTT reconnect. |
 | `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4). |
 | `twwp/<id>/ota_state` | yes | node → broker | Dedicated OTA state topic for high-frequency OTA progress/status updates. Reserved for OTA telemetry. |
 | `twwp/register` | no | node → broker | First-connect registration payload (M8 — not yet implemented). |
@@ -108,6 +108,68 @@ A `number` entity that controls the moving-average window size (shared across bo
 
 ---
 
+### Battery voltage monitor (M2.5)
+
+Three read sensors and three writable config numbers. All sensors read from `twwp/<id>/status`.
+
+| Topic | Entity type | Unit | Notes |
+|---|---|---|---|
+| `homeassistant/sensor/twwp_<id>_supply_voltage/config` | sensor | V | device_class=voltage, state_class=measurement |
+| `homeassistant/sensor/twwp_<id>_supply_voltage_pct/config` | sensor | % | device_class=battery, state_class=measurement |
+| `homeassistant/sensor/twwp_<id>_supply_voltage_divider/config` | sensor (diagnostic) | V | Raw ADS1115 divider-node voltage before the 4.0303x battery scaling |
+| `homeassistant/sensor/twwp_<id>_supply_voltage_state/config` | sensor | — | "Charging" / "Discharging" / "Stable" |
+| `homeassistant/number/twwp_<id>_voltage_v_min/config` | number (config) | V | Empty-battery threshold. Range 9–13, step 0.1. cmd key: `set_v_min` |
+| `homeassistant/number/twwp_<id>_voltage_v_max/config` | number (config) | V | Full-battery threshold. Range 12–16, step 0.1. cmd key: `set_v_max` |
+| `homeassistant/number/twwp_<id>_voltage_cal_factor/config` | number (config) | — | Calibration multiplier. Range 0.800–1.200, step 0.001. cmd key: `set_voltage_cal` |
+
+---
+
+### Valve relay (M3)
+
+Binary sensor reporting the relay state (open = energised = LED/valve on).
+
+| Topic | Entity type | Notes |
+|---|---|---|
+| `homeassistant/binary_sensor/twwp_<id>_valve_open/config` | binary_sensor | device_class=opening. `ON` when relay energised (valve open). |
+
+Status fields added to `twwp/<id>/status`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `valve_open` | bool | `true` = relay energised (valve open / LED on) |
+| `valve_auto` | bool | `true` = flow-driven auto mode; `false` = manual MQTT override |
+
+---
+
+### Water quality — RS485-3177 × 3 zones (M5, pending)
+
+Fields added to `twwp/<id>/status` once M5 firmware is implemented. Zone naming is locked in — InfluxDB schema and HA include list are already configured for these exact names.
+
+| Status field | Type | Zone | Unit | Notes |
+|---|---|---|---|---|
+| `wq_pre_ro_ph` | float | Pre-RO filter | pH | 0–14 |
+| `wq_pre_ro_orp` | int | Pre-RO filter | mV | ORP |
+| `wq_pre_ro_ec` | float | Pre-RO filter | µS/cm | EC |
+| `wq_pre_ro_temp` | float | Pre-RO filter | °C | Water temp |
+| `wq_post_ro_ph` | float | Post-RO filter | pH | |
+| `wq_post_ro_orp` | int | Post-RO filter | mV | |
+| `wq_post_ro_ec` | float | Post-RO filter | µS/cm | |
+| `wq_post_ro_temp` | float | Post-RO filter | °C | |
+| `wq_remin_ph` | float | Remineralised | pH | |
+| `wq_remin_orp` | int | Remineralised | mV | |
+| `wq_remin_ec` | float | Remineralised | µS/cm | |
+| `wq_remin_temp` | float | Remineralised | °C | |
+
+HA discovery topics (one per metric per zone):
+`homeassistant/sensor/twwp_<id>_wq_<zone>_<metric>/config`
+
+HA entities (12 total, e.g.):
+- `sensor.wh_001_wq_pre_ro_ph`, `sensor.wh_001_wq_pre_ro_orp`, `sensor.wh_001_wq_pre_ro_ec`, `sensor.wh_001_wq_pre_ro_temp`
+- `sensor.wh_001_wq_post_ro_ph`, ..., `sensor.wh_001_wq_post_ro_temp`
+- `sensor.wh_001_wq_remin_ph`, ..., `sensor.wh_001_wq_remin_temp`
+
+---
+
 ### OTA diagnostics (M4)
 
 OTA discovery entities are read-only diagnostic sensors backed by [`twwp/<id>/status`](docs/MQTT_TOPIC_MAP.md).
@@ -159,6 +221,11 @@ The node subscribes to `twwp/<id>/cmd`. Payload must be valid JSON. Supported ke
 | `set_debounce_us_1` | int (100–10000) | Debounce period in microseconds for channel 1. Persisted to `node.json`. |
 | `set_debounce_us_2` | int (100–10000) | Debounce period in microseconds for channel 2. Persisted to `node.json`. |
 | `set_flow_avg_window` | int (1–20) | Moving average window size (shared across both channels). Persisted to `node.json`. |
+| `set_v_min` | float (9.0–13.0) | Set empty-battery voltage for % calculation. Persisted to NVS. |
+| `set_v_max` | float (12.0–16.0) | Set full-battery voltage for % calculation. Persisted to NVS. |
+| `set_voltage_cal` | float (0.8–1.2) | Set voltage calibration multiplier. Persisted to NVS. |
+| `valve_open` | bool | Open (`true`) or close (`false`) relay. Disables auto mode. |
+| `valve_auto` | bool | Re-enable (`true`) or disable (`false`) flow-driven auto mode. |
 | `restart_wifi` | bool | Trigger WiFi reconnect. |
 | `ota_url` | string | Start HTTPS OTA update from the given firmware URL. |
 | `ota_md5` | string | Optional expected MD5 hash for the firmware image. Used only with `ota_url`. |

@@ -141,15 +141,37 @@ Valve type not yet finalised — currently using a 12V LED + relay module to sim
 
 ---
 
-## M5 — YiErYi 3788 RS485
+## Monitoring Stack — InfluxDB 3 Core + Grafana
 
-Blocked on hardware debug. When unblocked:
+Server-side analytics layer. Local project: `/home/kenny/twwp-monitoring/`. Not firmware.
+
+- [x] Create `docker-compose.yml` — InfluxDB 3 Core (`influxdb:3-core`) + Grafana (`grafana/grafana-oss`) on Hetzner VPS.
+- [x] Grafana datasource auto-provisioned (InfluxQL, bearer token auth).
+- [x] HA integration config (`ha-config/influxdb.yaml`) — all live TWWP entities + 12 water quality stubs.
+- [x] Three-zone water quality schema locked in: `pre_ro`, `post_ro`, `remin` — entity names and M5 firmware field contract documented.
+- [x] Deploy guide: `docs/SETUP.md` with UFW rules, token creation, HA wiring steps.
+- [ ] **Deploy to server** — clone repo, `docker compose up -d`, generate InfluxDB token, configure HA. Follow `docs/SETUP.md`.
+- [ ] Verify HA writing: `docker logs homeassistant | grep influx` + InfluxDB query confirms data arriving.
+- [ ] Create Grafana dashboards via UI: Overview, Flow History, Water Quality (3-zone), System.
+- [ ] Export dashboard JSON and commit to `grafana/provisioning/dashboards/`.
+
+---
+
+## M5 — YiErYi RS485-3177 (water quality sensors)
+
+Three sensors: pre-RO filter, post-RO filter, remineralised. Each: pH, ORP, EC, temp.
+Blocked on hardware. When unblocked:
 
 - [ ] Use ESPHome to confirm Modbus register addresses and baud rate.
 - [ ] Read `references/Modbus Communication Data Format-V1.01.xlsx` to confirm slave address, baud, register map.
 - [ ] Add `sensor_yieryi.{h,cpp}` using UART1 (`UART_MODE_RS485_HALF_DUPLEX`, GPIO17/18, GPIO21 auto DE/RE).
-- [ ] HA discovery: pH, ORP, EC, TDS, CF, water temp, RH.
+- [ ] Publish per-zone fields in `twwp/<id>/status` JSON — field names locked in (see MQTT_TOPIC_MAP.md):
+  `wq_pre_ro_ph`, `wq_pre_ro_orp`, `wq_pre_ro_ec`, `wq_pre_ro_temp`,
+  `wq_post_ro_ph`, `wq_post_ro_orp`, `wq_post_ro_ec`, `wq_post_ro_temp`,
+  `wq_remin_ph`, `wq_remin_orp`, `wq_remin_ec`, `wq_remin_temp`.
+- [ ] HA MQTT discovery: 12 sensor entities (4 metrics × 3 zones) — names locked in, Grafana/InfluxDB already configured for them.
 - [ ] Staleness watchdog: no successful read in 60s → mark unavailable.
+- [ ] Update `SensorData` struct in `FIRMWARE_ARCHITECTURE.md` (multi-zone fields already documented).
 
 ---
 

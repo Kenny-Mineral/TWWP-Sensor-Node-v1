@@ -64,16 +64,35 @@ Extended `session_flow.{h,cpp}` to track actual flow time vs total session time 
 
 Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 
+## Last done
+
+### Session 2026-05-05 — InfluxDB 3 Core + Grafana monitoring stack
+
+**Created `/home/kenny/twwp-monitoring/`** — new git repo (separate from firmware) for the server-side monitoring stack. Committed to `main`.
+
+**Stack:** InfluxDB 3 Core + Grafana in docker-compose on the Hetzner VPS (co-located with HA + Mosquitto). InfluxDB binds to `0.0.0.0:8181` (UFW blocks external); Grafana binds to `127.0.0.1:3000` (Tailscale access via `http://100.67.244.37:3000`).
+
+**HA integration config** (`ha-config/influxdb.yaml`) — writes all live TWWP entities via v2 write API (InfluxDB 3 supports v1/v2 compat). Entity list includes 12 water quality stubs (pre-RO / post-RO / remineralised: pH, ORP, EC, temp) — HA silently skips missing entities until M5 firmware publishes MQTT discovery.
+
+**Three-zone water quality schema designed** — zone naming locked in: `pre_ro`, `post_ro`, `remin`. Entity naming convention and M5 firmware field contract documented in `docs/SETUP.md` and `MQTT_TOPIC_MAP.md`. Grafana Water Quality view planned with placeholder panels per zone.
+
+**Grafana datasource auto-provisioned** — InfluxQL mode, bearer token auth via custom HTTP header. Dashboard provider registered; dashboards to be created via UI and committed as JSON.
+
+**Updated:** INFRASTRUCTURE.md (InfluxDB + Grafana entries), TASK_QUEUE.md (monitoring milestone), MQTT_TOPIC_MAP.md (wq_* M5 fields), FIRMWARE_ARCHITECTURE.md (multi-zone SensorData).
+
+**Not yet done (deployment):** Stack not yet deployed to server — follow `docs/SETUP.md` to deploy, generate InfluxDB token, wire up HA.
+
 ## In progress
 - Nothing active.
 
 ## Next step
+- Deploy monitoring stack to server: `ssh root@91.98.133.15`, clone twwp-monitoring repo, `docker compose up -d`, create InfluxDB token, configure HA. Full steps in `/home/kenny/twwp-monitoring/docs/SETUP.md`.
+- After deployment: create Grafana dashboards (Overview, Flow History, Water Quality, System) via UI, export JSON, commit to repo.
 - Remaining M3: confirm final valve/actuator type and purchase; add auto-close safety timeout.
 - Optional: fix corrupted NVS k_factor_2 — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
-- M2: confirm pressure transducer model and PSI range before ordering.
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-05-04
+2026-05-05

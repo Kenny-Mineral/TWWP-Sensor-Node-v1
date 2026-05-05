@@ -100,10 +100,11 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `sensor_leak.{h,cpp}` | MH-RD digital — LOW = wet, logs event on state change |
 | `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing, uint64_t raw pulse totals, K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel, runtime-configurable debounce/window |
 | `session_flow.{h,cpp}` | Tap session lifecycle — IDLE/ACTIVE/ENDING state machine, configurable idle timeout (NVS, 5–100 s) and flow threshold (NVS, 0.01–0.5 L/min), 10-session ring buffer with SD persistence, retained `sessions_recent` MQTT publish, leak-suspect detection |
+| `sensor_voltage.{h,cpp}` | ADS1115 I²C ADC (0x48) + 100kΩ/33kΩ divider — 12V battery voltage, %, charge state, NVS-persisted v_min/v_max/cal (M2.5) |
 | `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
 | `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
 | `sensor_yieryi.{h,cpp}` | Stub — YiErYi 3788 Modbus RTU via RS485 UART1 (M5, blocked on hardware debug) |
-| `actuator_solenoid.{h,cpp}` | Stub — N-MOSFET gate driver (M3, actuator not yet purchased) |
+| `actuator_valve.{h,cpp}` | Active-low relay driver — auto-opens on sensor 1 flow via `FLOW_ACTIVE_THRESHOLD_LPM`; manual override via MQTT `valve_open`/`valve_auto` cmd keys |
 
 ---
 
@@ -136,12 +137,11 @@ struct SensorData {
     bool      flow_ok;         // set by HealthService
     bool      pressure_ok;
     bool      power_ok;
-    // M5 — YiErYi 3788
-    float     ph;
-    float     orp;
-    float     ec;
-    float     tds;
-    float     water_temp;
+    // M5 — RS485-3177 × 3 zones (pre-RO filter, post-RO filter, remineralised)
+    // Field names are locked in — HA entities, InfluxDB schema, and Grafana are already configured for these.
+    float     wq_pre_ro_ph;    float wq_pre_ro_orp;   float wq_pre_ro_ec;   float wq_pre_ro_temp;
+    float     wq_post_ro_ph;   float wq_post_ro_orp;  float wq_post_ro_ec;  float wq_post_ro_temp;
+    float     wq_remin_ph;     float wq_remin_orp;    float wq_remin_ec;    float wq_remin_temp;
 };
 ```
 
