@@ -24,6 +24,14 @@ int16_t sensorYieryi_getOrpMv(uint8_t zone);
 float sensorYieryi_getEcUsCm(uint8_t zone);
 float sensorYieryi_getTempC(uint8_t zone);
 uint16_t sensorYieryi_getHumidityPct(uint8_t zone);
+float sensorYieryi_getTdsPpm(uint8_t zone);
+
+const char* sensorYieryi_getPhCalDate(uint8_t zone);
+const char* sensorYieryi_getOrpCalDate(uint8_t zone);
+const char* sensorYieryi_getEcCalDate(uint8_t zone);
+bool sensorYieryi_setPhCalDate(uint8_t zone, const char* date);
+bool sensorYieryi_setOrpCalDate(uint8_t zone, const char* date);
+bool sensorYieryi_setEcCalDate(uint8_t zone, const char* date);
 uint32_t sensorYieryi_getLastSuccessAgeMs(uint8_t zone);
 uint16_t sensorYieryi_getFailCount(uint8_t zone);
 const char* sensorYieryi_getLastError(uint8_t zone);

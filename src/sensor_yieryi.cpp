@@ -48,16 +48,20 @@ struct ZoneState {
     float ecUsCm;
     float tempC;
     uint16_t humidityPct;
+    float tdsPpm;
     unsigned long lastSuccessMs;
     uint16_t failCount;
     char lastError[40];
     char rawHex[64];
+    char phCalDate[12];
+    char orpCalDate[12];
+    char ecCalDate[12];
 };
 
 static ZoneState zones[YIERYI_ZONE_COUNT] = {
-    { "pre_ro",  "Pre-RO",        1, true,  true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "not polled", "" },
-    { "post_ro", "Post-RO",       2, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "disabled",   "" },
-    { "remin",   "Remineralised", 3, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "disabled",   "" },
+    { "pre_ro",  "Pre-RO",        1, true,  true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "not polled", "" },
+    { "post_ro", "Post-RO",       2, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "disabled",   "" },
+    { "remin",   "Remineralised", 3, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "disabled",   "" },
 };
 
 static PollState pollState = PollState::Idle;
@@ -165,15 +169,18 @@ static bool parseReadResponse(ZoneState& zone, MeterMode mode) {
         uint16_t phOrOrpRaw = (static_cast<uint16_t>(frame[6]) << 8) | frame[7];
         uint16_t humRaw = (static_cast<uint16_t>(frame[8]) << 8) | frame[9];
         uint16_t tempRawU = (static_cast<uint16_t>(frame[10]) << 8) | frame[11];
-        int16_t signedPhOrOrp = static_cast<int16_t>(phOrOrpRaw);
         int16_t signedTempRaw = static_cast<int16_t>(tempRawU);
 
         zone.ecUsCm = static_cast<float>(ecRaw);
         zone.tempC = static_cast<float>(signedTempRaw) / 10.0f;
         zone.humidityPct = humRaw;
+        zone.tdsPpm = zone.ecUsCm * 0.5f;
         zone.commonValid = true;
         if (mode == MeterMode::Orp) {
-            zone.orpMv = signedPhOrOrp;
+            // Bit 15 = sign indicator (1=positive, 0=negative), bits 14:0 = magnitude in mV
+            bool positive = (phOrOrpRaw & 0x8000) != 0;
+            zone.orpMv = positive ? static_cast<int16_t>(phOrOrpRaw & 0x7FFF)
+                                  : -static_cast<int16_t>(phOrOrpRaw & 0x7FFF);
             zone.orpValid = true;
         } else {
             zone.ph = static_cast<float>(phOrOrpRaw) / 100.0f;
@@ -276,7 +283,24 @@ static void loadConfig() {
         if (!zones[i].enabled) {
             setError(zones[i], "disabled");
         }
+        const char* phCal  = zoneCfg["ph_cal_date"]  | "";
+        const char* orpCal = zoneCfg["orp_cal_date"] | "";
+        const char* ecCal  = zoneCfg["ec_cal_date"]  | "";
+        strncpy(zones[i].phCalDate,  phCal,  sizeof(zones[i].phCalDate)  - 1);
+        strncpy(zones[i].orpCalDate, orpCal, sizeof(zones[i].orpCalDate) - 1);
+        strncpy(zones[i].ecCalDate,  ecCal,  sizeof(zones[i].ecCalDate)  - 1);
     }
+}
+
+static bool saveCalDate(uint8_t zone, const char* paramKey, const char* date) {
+    JsonDocument doc;
+    storeSd_readJsonFile(SD_CONFIG_PATH, doc);
+    JsonObject wq = doc["water_quality"].as<JsonObject>();
+    if (wq.isNull()) wq = doc["water_quality"].to<JsonObject>();
+    JsonObject zoneCfg = wq[zones[zone].key].as<JsonObject>();
+    if (zoneCfg.isNull()) zoneCfg = wq[zones[zone].key].to<JsonObject>();
+    zoneCfg[paramKey] = date;
+    return storeSd_writeJsonFile(SD_CONFIG_PATH, doc);
 }
 
 bool sensorYieryi_begin() {
@@ -401,6 +425,39 @@ uint16_t sensorYieryi_getHumidityPct(uint8_t zone) {
     return validZone(zone) ? zones[zone].humidityPct : 0;
 }
 
+float sensorYieryi_getTdsPpm(uint8_t zone) {
+    return validZone(zone) ? zones[zone].tdsPpm : NAN;
+}
+
+const char* sensorYieryi_getPhCalDate(uint8_t zone) {
+    return validZone(zone) ? zones[zone].phCalDate : "";
+}
+const char* sensorYieryi_getOrpCalDate(uint8_t zone) {
+    return validZone(zone) ? zones[zone].orpCalDate : "";
+}
+const char* sensorYieryi_getEcCalDate(uint8_t zone) {
+    return validZone(zone) ? zones[zone].ecCalDate : "";
+}
+
+bool sensorYieryi_setPhCalDate(uint8_t zone, const char* date) {
+    if (!validZone(zone) || !date) return false;
+    strncpy(zones[zone].phCalDate, date, sizeof(zones[zone].phCalDate) - 1);
+    zones[zone].phCalDate[sizeof(zones[zone].phCalDate) - 1] = '\0';
+    return saveCalDate(zone, "ph_cal_date", date);
+}
+bool sensorYieryi_setOrpCalDate(uint8_t zone, const char* date) {
+    if (!validZone(zone) || !date) return false;
+    strncpy(zones[zone].orpCalDate, date, sizeof(zones[zone].orpCalDate) - 1);
+    zones[zone].orpCalDate[sizeof(zones[zone].orpCalDate) - 1] = '\0';
+    return saveCalDate(zone, "orp_cal_date", date);
+}
+bool sensorYieryi_setEcCalDate(uint8_t zone, const char* date) {
+    if (!validZone(zone) || !date) return false;
+    strncpy(zones[zone].ecCalDate, date, sizeof(zones[zone].ecCalDate) - 1);
+    zones[zone].ecCalDate[sizeof(zones[zone].ecCalDate) - 1] = '\0';
+    return saveCalDate(zone, "ec_cal_date", date);
+}
+
 uint32_t sensorYieryi_getLastSuccessAgeMs(uint8_t zone) {
     if (!validZone(zone) || zones[zone].lastSuccessMs == 0) {
         return UINT32_MAX;
@@ -427,13 +484,15 @@ void sensorYieryi_printStatus(Print& out) {
         out.printf("  %s addr=%u enabled=%u online=%u fail=%u err=%s raw=%s\n",
                    z.label, z.address, z.enabled ? 1 : 0, sensorYieryi_isOnline(i) ? 1 : 0,
                    z.failCount, z.lastError, z.rawHex);
-        out.printf("    ph=%s%.2f orp=%s%d ec=%s%.0f temp=%s%.1f hum=%u\n",
+        out.printf("    ph=%s%.2f orp=%s%d ec=%s%.0f tds=%s%.1f temp=%s%.1f hum=%u\n",
                    sensorYieryi_hasPh(i) ? "" : "stale/",
                    z.ph,
                    sensorYieryi_hasOrp(i) ? "" : "stale/",
                    z.orpMv,
                    sensorYieryi_hasEc(i) ? "" : "stale/",
                    z.ecUsCm,
+                   sensorYieryi_hasEc(i) ? "" : "stale/",
+                   z.tdsPpm,
                    sensorYieryi_hasTemp(i) ? "" : "stale/",
                    z.tempC,
                    z.humidityPct);

@@ -3,6 +3,52 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
+### Session 2026-05-08 (continued) — M5 first hardware test, OTA fix, TDS + calibration dates
+
+**OTA bug fix (net_ota.cpp — two bugs, both fixed, USB-flashed):**
+- **Bug 1:** `netOta_loop()` only called `ArduinoOTA.handle()` when `otaState == IDLE`. Any other state (e.g. FAILED from a previous attempt) meant OTA invitations were ignored forever. Fix: call `ArduinoOTA.handle()` unless actively in DOWNLOADING/VERIFYING/APPLYING.
+- **Bug 2:** `netOta_begin()` had early-return paths (OTA_BOOT_SEEN, OTA_BOOT_ROLLED_BACK) that bypassed `ArduinoOTA.begin()`. These were boot-flag states that left the device with no OTA listener. Restructured to if/else-if chain — `ArduinoOTA.begin()` always executes. Also fixed `onError` callback from `setError()` (→FAILED) to `setState(IDLE)` so OTA errors don't permanently block LAN updates.
+- **ArduinoOTA LAN OTA** remains unreliable: UDP invitation sent OK, device does not respond. Likely cause: router AP/client isolation blocking direct device-to-device LAN traffic (UDP 3232 / TCP 24123). MQTT-driven OTA and USB flash both work fine.
+
+**M5 hardware test — YiErYi RS485-3177 first connection:**
+- Wired one meter (pre-RO) to the Waveshare RS485 terminal block (A→A, B→B, GND→GND). Meter powered from AC adapter.
+- **A/B were swapped on first attempt** — symptom: `wq_pre_ro_last_error: read timeout`, `raw_hex` empty, fail_count incrementing. Fix: swap A and B on one end only. Within one poll cycle `online` became `true` and `raw_hex` showed a valid 16-byte frame.
+- **Frame layout confirmed** from vendor doc `Modbus Communication Data Format-V1.01.xlsx`:
+  ```
+  [addr][0x03][0x00][0x08] [EC_H][EC_L] [pH/ORP_H][pH/ORP_L] [HUM_H][HUM_L] [TMP_H][TMP_L] [RSV1][RSV2] [CRC_L][CRC_H]
+  ```
+  The `0x00 0x08` at bytes 2-3 is non-standard (standard Modbus would have just `0x08`). EC/pH-ORP/humidity/temp order confirmed. Bytes 12-13 are vendor reserve, not data.
+
+**ORP encoding — NOT standard int16, NOT as documented in read_meter.py:**
+- Raw ORP bytes e.g. `81 BB` (33211 unsigned). Standard int16 = -32325 — clearly wrong for a meter showing +449 mV.
+- Confirmed encoding: **bit 15 = sign flag (1=positive, 0=negative), bits 14:0 = magnitude in mV**.
+  - `0x81BB`: bit15=1 → positive, magnitude=0x01BB=443 mV. Meter displayed ~449 mV. 6 mV delta = ORP drift between read and display check.
+  - `0x821C`: bit15=1 → positive, magnitude=0x021C=540 mV. Meter displayed ~519 mV. 21 mV delta = same drift.
+- The `read_meter.py` script in the vendor folder uses standard int16 for ORP — this was an untested assumption by the author and is incorrect for the 3177.
+- pH encoding confirmed correct: raw ÷ 100.0 (e.g. `02BC` = 700 → 7.00 pH). Temperature: signed int16 ÷ 10.0.
+- Fix applied in `parseReadResponse()`:
+  ```cpp
+  bool positive = (phOrOrpRaw & 0x8000) != 0;
+  zone.orpMv = positive ? (int16_t)(phOrOrpRaw & 0x7FFF) : -(int16_t)(phOrOrpRaw & 0x7FFF);
+  ```
+
+**TDS/PPM added:**
+- `zone.tdsPpm = zone.ecUsCm * 0.5f` in `parseReadResponse()`. Standard KCl conversion factor.
+- Verified: EC=77 µS/cm → TDS=38.5 ppm. User confirmed meter shows ~38 ppm. ✓
+- Published as `wq_<zone>_tds_ppm` in status and HA discovery.
+
+**Calibration date tracking added:**
+- Physical calibration (pH buffer, ORP standard, EC standard) is done directly on the meter's buttons. The meter applies calibration internally — Modbus output is already the calibrated value. No firmware-side cal offset needed.
+- Firmware now tracks WHEN calibrations occurred via three date strings per zone stored in `node.json` under `water_quality.<zone>.ph_cal_date / orp_cal_date / ec_cal_date`.
+- Published in status: `wq_<zone>_ph_cal_date`, `wq_<zone>_orp_cal_date`, `wq_<zone>_ec_cal_date`.
+- Set via MQTT cmd (see USER_OPERATIONS.md for full procedure).
+- HA discovery: 3 text sensor entities per zone (one per parameter).
+
+**Build:** USB flash ×2 successful. Final size: RAM 18.7%, Flash 22.4%.
+
+**Readings confirmed live (pre-RO, tap water):**
+- pH: 6.81–6.92, ORP: 480 mV, EC: 77–82 µS/cm, TDS: 38–41 ppm, Temp: 18.1–18.3°C, Humidity: 88–92%
+
 ### Session 2026-05-08 — M5 YiErYi RS485 water-quality firmware
 
 **Implemented:** Added `sensor_yieryi.{h,cpp}` for YiErYi 3178/3788 water-quality meters on the Waveshare onboard RS485 port. The driver uses UART1 through the board RS485 transceiver (GPIO17 TX, GPIO18 RX, GPIO21 auto DE/RE), not the laptop USB-RS485 adapter.
@@ -113,18 +159,22 @@ Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 **Persistent memory notes added:** server file write approach (write to /tmp → docker cp), HA influxdb YAML config gotcha, Tailscale IP + SSH user confirmed.
 
 ## In progress
-- Firmware: ready to commit current combined firmware state, including prior uncommitted M3/M2.5/session changes plus M5 water-quality driver.
+- All M5 firmware changes committed (OTA fix, ORP encoding fix, TDS, calibration dates).
 
 ## Next step
-- Upload firmware to the Waveshare board, wire one YiErYi meter to the onboard RS485 A/B terminals, then run serial `wq_status` or inspect MQTT status fields for `wq_pre_ro_raw_hex`, `wq_pre_ro_last_error`, and parsed pH/ORP/EC/temp.
-- If multiple meters are installed, assign unique Modbus addresses before enabling `post_ro` and `remin` in `/config/node.json`.
-- Create Grafana dashboards via UI: Overview (flow rates, leak, valve, battery), Flow History, Water Quality, System.
+- Record first calibration dates via MQTT once meter is physically calibrated:
+  ```json
+  {"set_wq_pre_ro_ph_cal_date": "2026-05-08", "set_wq_pre_ro_orp_cal_date": "2026-05-08", "set_wq_pre_ro_ec_cal_date": "2026-05-08"}
+  ```
+- Wire post-RO and remineralised meters when available. Assign unique Modbus addresses on each meter via its physical menu before enabling in `/config/node.json`.
+- Investigate ArduinoOTA LAN issue — router AP/client isolation suspected. Try disabling AP isolation on router, or tcpdump to confirm UDP 3232 packets reach the device.
+- Create Grafana dashboards via UI: Overview (flow rates, leak, valve, battery), Flow History, Water Quality (3-zone), System.
 - Export dashboard JSON and commit to `grafana/provisioning/dashboards/` in the twwp-monitoring repo.
 - M3: confirm final valve type and purchase. Add auto-close safety timeout to `actuator_valve.cpp`.
 - Optional: fix corrupted NVS `k_factor_2` — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
 
 ## Tool last used
-codex
+claude-code
 
 ## Updated
-2026-05-08 00:38
+2026-05-08 (session 2)

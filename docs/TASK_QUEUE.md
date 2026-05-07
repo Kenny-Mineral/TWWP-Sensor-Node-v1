@@ -172,9 +172,14 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
   `wq_remin_ph`, `wq_remin_orp`, `wq_remin_ec`, `wq_remin_temp`.
 - [x] HA MQTT discovery: 12 sensor entities (4 metrics × 3 zones) — names locked in, Grafana/InfluxDB already configured for them.
 - [x] Staleness watchdog: no successful read in 60s → status values become `null`.
-- [ ] Update `SensorData` struct in `FIRMWARE_ARCHITECTURE.md` (multi-zone fields already documented).
-- [ ] Hardware test: flash firmware, wire one meter on RS485, run serial `wq_status`, and confirm CRC-valid raw frame plus parsed pH/ORP/EC/temp in MQTT.
-- [ ] Confirm whether all three probes have unique Modbus addresses; update `/config/node.json` before enabling post-RO and remineralised zones.
+- [x] **Hardware test** (2026-05-08): wired one pre-RO meter, confirmed CRC-valid frame, pH/EC/temp/ORP all live in MQTT. A/B polarity was swapped on first attempt — symptom is `read timeout` + empty `raw_hex`.
+- [x] **ORP encoding fix**: 3177 uses bit-15 sign flag (not standard int16). `0x81BB` → +443 mV, not -32325. Fix in `parseReadResponse()`. Confirmed against live meter.
+- [x] **TDS/PPM**: `tdsPpm = ecUsCm * 0.5f`. Confirmed 77 µS/cm → 38.5 ppm matches meter display. Published as `wq_<zone>_tds_ppm`.
+- [x] **Calibration date tracking**: `ph_cal_date`, `orp_cal_date`, `ec_cal_date` per zone stored in `node.json`, published in status, settable via MQTT cmd `set_wq_<zone>_*_cal_date`. HA text sensor entities per zone. See `USER_OPERATIONS.md`.
+- [x] **ArduinoOTA fix** (net_ota.cpp): `handle()` now called in all non-active states; `begin()` now always runs regardless of boot-flag path; `onError` sets IDLE not FAILED.
+- [ ] Investigate ArduinoOTA LAN OTA — UDP invitation reaches device (port 3232 open) but device does not respond. Likely router AP/client isolation. Test: disable AP isolation or use tcpdump on device's RSSI-confirmed AP.
+- [ ] Confirm Modbus addresses on post-RO and remineralised meters before enabling those zones in `/config/node.json`.
+- [ ] Create Grafana dashboards: Overview, Flow History, Water Quality (3-zone), System. Export JSON to `grafana/provisioning/dashboards/`.
 
 ---
 

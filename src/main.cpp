@@ -65,6 +65,9 @@ static void addWaterQualityStatus(JsonDocument& doc, uint8_t zone, const char* p
     snprintf(key, sizeof(key), "wq_%s_ec", prefix);
     setJsonFloatOrNull(doc, key, sensorYieryi_hasEc(zone), sensorYieryi_getEcUsCm(zone), 0);
 
+    snprintf(key, sizeof(key), "wq_%s_tds_ppm", prefix);
+    setJsonFloatOrNull(doc, key, sensorYieryi_hasEc(zone), sensorYieryi_getTdsPpm(zone), 1);
+
     snprintf(key, sizeof(key), "wq_%s_temp", prefix);
     setJsonFloatOrNull(doc, key, sensorYieryi_hasTemp(zone), sensorYieryi_getTempC(zone), 1);
 
@@ -82,6 +85,13 @@ static void addWaterQualityStatus(JsonDocument& doc, uint8_t zone, const char* p
 
     snprintf(key, sizeof(key), "wq_%s_raw_hex", prefix);
     doc[key] = sensorYieryi_getRawHex(zone);
+
+    snprintf(key, sizeof(key), "wq_%s_ph_cal_date", prefix);
+    doc[key] = sensorYieryi_getPhCalDate(zone);
+    snprintf(key, sizeof(key), "wq_%s_orp_cal_date", prefix);
+    doc[key] = sensorYieryi_getOrpCalDate(zone);
+    snprintf(key, sizeof(key), "wq_%s_ec_cal_date", prefix);
+    doc[key] = sensorYieryi_getEcCalDate(zone);
 }
 
 static const char* csvFloatOrBlank(char* out, size_t outLen, bool valid, float value, uint8_t decimals) {
@@ -1286,10 +1296,30 @@ static bool publishHaDiscoveryWaterQuality() {
         snprintf(name, sizeof(name), "%s EC", z.name);
         ok &= publishHaWaterQualitySensor(uid, name, key, "µS/cm", "", "measurement", z.subId, z.name);
 
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_tds_ppm", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_tds_ppm", z.suffix);
+        snprintf(name, sizeof(name), "%s TDS", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "ppm", "", "measurement", z.subId, z.name);
+
         snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_temp", z.suffix);
         snprintf(key, sizeof(key), "wq_%s_temp", z.suffix);
         snprintf(name, sizeof(name), "%s Temperature", z.name);
         ok &= publishHaWaterQualitySensor(uid, name, key, "°C", "temperature", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ph_cal_date", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_ph_cal_date", z.suffix);
+        snprintf(name, sizeof(name), "%s pH Cal Date", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_orp_cal_date", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_orp_cal_date", z.suffix);
+        snprintf(name, sizeof(name), "%s ORP Cal Date", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ec_cal_date", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_ec_cal_date", z.suffix);
+        snprintf(name, sizeof(name), "%s EC Cal Date", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
     }
 
     Serial.print("[MQTT] HA water quality discovery ");
@@ -1440,6 +1470,22 @@ static void handleCmd(const char* payload) {
         if (!netOta_beginUpdate(url, md5)) {
             Serial.print("[OTA] failed to start update: ");
             Serial.println(netOta_getError() ? netOta_getError() : "unknown");
+        }
+    }
+    {
+        static const struct { const char* suffix; uint8_t zone; } wqZones[] = {
+            { "pre_ro",  YIERYI_ZONE_PRE_RO  },
+            { "post_ro", YIERYI_ZONE_POST_RO },
+            { "remin",   YIERYI_ZONE_REMIN   },
+        };
+        char key[56];
+        for (const auto& z : wqZones) {
+            snprintf(key, sizeof(key), "set_wq_%s_ph_cal_date", z.suffix);
+            if (!doc[key].isNull()) sensorYieryi_setPhCalDate(z.zone, doc[key].as<const char*>());
+            snprintf(key, sizeof(key), "set_wq_%s_orp_cal_date", z.suffix);
+            if (!doc[key].isNull()) sensorYieryi_setOrpCalDate(z.zone, doc[key].as<const char*>());
+            snprintf(key, sizeof(key), "set_wq_%s_ec_cal_date", z.suffix);
+            if (!doc[key].isNull()) sensorYieryi_setEcCalDate(z.zone, doc[key].as<const char*>());
         }
     }
     if (!doc["valve_open"].isNull()) {

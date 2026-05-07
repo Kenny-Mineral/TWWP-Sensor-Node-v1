@@ -868,17 +868,172 @@ The M5 firmware publishes 12 water quality entities (`wq_pre_ro_*`, `wq_post_ro_
 
 ### Water quality zones (M5)
 
-Three RS485-3177/3178 sensors: pre-RO filter, post-RO filter, remineralised. Entity naming locked in:
+Three YiErYi RS485-3177 sensors: pre-RO filter, post-RO filter, remineralised. HA entity naming locked in:
 
 ```
-sensor.wh_001_wq_pre_ro_ph / orp / ec / temp
-sensor.wh_001_wq_post_ro_ph / orp / ec / temp
-sensor.wh_001_wq_remin_ph / orp / ec / temp
+sensor.wh_001_wq_pre_ro_ph / orp / ec / tds_ppm / temp / humidity
+sensor.wh_001_wq_post_ro_ph / orp / ec / tds_ppm / temp / humidity
+sensor.wh_001_wq_remin_ph / orp / ec / tds_ppm / temp / humidity
 ```
 
-Default firmware behaviour enables one meter only: pre-RO at Modbus address `1`, 9600 8N1, using the Waveshare onboard RS485 port on GPIO17/18/21. Additional zones stay disabled until their Modbus addresses are confirmed.
+Default firmware enables one meter only: pre-RO at Modbus address `1`, 9600 8N1, using the Waveshare onboard RS485 port (GPIO17 TX / GPIO18 RX / GPIO21 auto DE/RE). Additional zones stay disabled until their Modbus addresses are confirmed.
 
-Optional `/config/node.json` override:
+---
+
+## Water Quality Meter — Wiring and First Connection
+
+### Hardware connection
+
+The YiErYi RS485-3177 meter connects to the Waveshare board RS485 terminal block:
+
+```
+Meter A  →  Board terminal A
+Meter B  →  Board terminal B
+Meter GND → Board terminal GND
+Meter power → AC adapter (NOT from the ESP32)
+```
+
+**A/B polarity matters.** If swapped, the driver will receive no bytes and report `read timeout`. Swapping one end fixes it immediately. Symptom of swapped A/B: `wq_<zone>_online: false`, `wq_<zone>_last_error: read timeout`, `wq_<zone>_raw_hex: ""` (empty), fail count incrementing.
+
+### First connection checklist
+
+1. Power the meter from its AC adapter. Do not use the ESP32 for meter power.
+2. Connect A→A, B→B, GND→GND on the terminal block.
+3. Confirm the meter's Modbus address is `1` (factory default). If using the vendor PC software (3178.exe) to check or change the address, connect via the USB-RS485 adapter (not the Waveshare board).
+4. Open the serial monitor: `pio device monitor` and run `wq_status`.
+5. Within 15–30 seconds you should see `online=1`, a non-empty `raw=` hex string, and parsed pH/ORP/EC/temp values.
+6. Alternatively, check the MQTT status payload — `wq_pre_ro_online: True` and `wq_pre_ro_last_error: ok`.
+
+### Confirming a good frame
+
+A valid 16-byte frame looks like:
+```
+01 03 00 08 | [EC_H EC_L] [pH/ORP_H pH/ORP_L] [HUM_H HUM_L] [TMP_H TMP_L] | [RSV RSV] | [CRC_L CRC_H]
+```
+
+Example (tap water, pH mode):
+```
+01 03 00 08 00 52 02 B5 00 5A 00 B6 xx xx CRC CRC
+              ^EC=82  ^pH=693→6.93  ^Hum=90% ^Tmp=182→18.2°C
+```
+
+### Register decoding reference
+
+| Bytes | Field | Decoding |
+|---|---|---|
+| 4–5 | EC | uint16, µS/cm (direct) |
+| 6–7 | pH or ORP | pH mode: uint16 ÷ 100.0 = pH; ORP mode: bit-15 sign flag (see below) |
+| 8–9 | Humidity | uint16, % (direct) — internal meter PCB sensor |
+| 10–11 | Temperature | signed int16 ÷ 10.0 = °C |
+| 12–13 | Reserve | Ignore — vendor-specific bytes |
+| 14–15 | CRC | Modbus CRC-16, little-endian |
+
+**ORP encoding — bit-15 sign convention (not standard int16):**
+The 3177 encodes ORP as: bit 15 = sign flag (1=positive, 0=negative), bits 14:0 = magnitude in mV.
+
+Example: `0x81E0` → bit15=1 → positive, magnitude=`0x01E0`=480 → ORP = +480 mV.
+Example: `0x0096` → bit15=0 → negative, magnitude=`0x0096`=150 → ORP = -150 mV.
+
+Note: ORP can drift 10–30 mV between the meter display update and the Modbus read — small discrepancies between the display and MQTT are normal.
+
+**TDS:** calculated as `EC (µS/cm) × 0.5` (standard KCl approximation). Confirmed accurate against the meter display. Published as `wq_<zone>_tds_ppm`.
+
+**Humidity:** this is an internal PCB humidity sensor inside the meter enclosure. It does not measure water. Useful for detecting condensation inside the meter — values around 60–95% are normal. No divisor applied; value is direct percent.
+
+---
+
+## Water Quality Status Fields
+
+All per-zone water quality fields in the MQTT heartbeat (`twwp/<node_id>/status`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `wq_<zone>_ph` | number or null | pH reading (2 decimal places). Null if offline or stale (>60s since last read). |
+| `wq_<zone>_orp` | number or null | ORP in mV. Null if offline or stale. ORP is read in alternating poll cycles with pH. |
+| `wq_<zone>_ec` | number or null | Electrical conductivity in µS/cm. Null if offline or stale. |
+| `wq_<zone>_tds_ppm` | number or null | TDS in ppm (EC × 0.5). Null if EC is null. |
+| `wq_<zone>_temp` | number or null | Water temperature in °C (1 decimal place). Null if offline or stale. |
+| `wq_<zone>_humidity` | number or null | Internal meter PCB humidity %. Null if offline or stale. |
+| `wq_<zone>_online` | bool | `true` if a CRC-valid read was received within the last 60 seconds. |
+| `wq_<zone>_fail_count` | number | Total consecutive failed reads since last boot. Resets on success. |
+| `wq_<zone>_last_error` | string | `"ok"` on success. Error message on failure: `"read timeout"`, `"read crc mismatch"`, `"disabled"`. |
+| `wq_<zone>_raw_hex` | string | Last successfully parsed Modbus frame as hex bytes. Empty on first boot before any successful read. |
+| `wq_<zone>_ph_cal_date` | string | ISO date of last pH calibration (e.g. `"2026-05-08"`). Empty if never recorded. |
+| `wq_<zone>_orp_cal_date` | string | ISO date of last ORP calibration. |
+| `wq_<zone>_ec_cal_date` | string | ISO date of last EC calibration. |
+
+Zone suffixes: `pre_ro`, `post_ro`, `remin`.
+
+---
+
+## Water Quality Meter — Physical Calibration
+
+### How calibration works
+
+The 3177 meter applies calibration internally. When you calibrate using standard solutions and the meter's physical buttons, the meter recalculates its slope/offset and stores it in its own flash. From that point, all Modbus reads return the calibrated value — the firmware receives the corrected reading automatically, with no firmware change or MQTT command needed.
+
+### Calibration procedure
+
+1. **pH calibration** (2-point recommended — Asia standard solutions): use pH 4.00 and pH 7.00 buffer solutions. Follow the meter's physical calibration menu. After calibration, verify the reading against a fresh buffer — the meter's display should match within ±0.05 pH.
+2. **ORP calibration**: immerse the ORP electrode in the ORP standard solution (typically Zobell solution ≈ +220 mV or Quinhydrone). Follow the meter menu.
+3. **EC calibration**: use a KCl standard solution of known conductivity (e.g. 1413 µS/cm). Follow the meter menu.
+
+After calibrating, compare the meter display to the `wq_pre_ro_*` fields in the MQTT status. If the values match (within ORP drift tolerance), calibration was successful.
+
+### Recording calibration dates via MQTT
+
+After each physical calibration, publish the date to the MQTT command channel. This date is stored in `/config/node.json` on the SD card and published in all subsequent status payloads.
+
+```bash
+mosquitto_pub \
+  -h twwp-iot.duckdns.org -p 8883 \
+  --capath /etc/ssl/certs \
+  -u twwp_wh_001 -P <MQTT_PASS> \
+  -t 'twwp/wh_001/cmd' \
+  -m '{"set_wq_pre_ro_ph_cal_date": "2026-05-08"}'
+```
+
+To record multiple calibrations at once:
+
+```json
+{
+  "set_wq_pre_ro_ph_cal_date": "2026-05-08",
+  "set_wq_pre_ro_orp_cal_date": "2026-05-08",
+  "set_wq_pre_ro_ec_cal_date": "2026-05-08"
+}
+```
+
+Replace `pre_ro` with `post_ro` or `remin` for the other zones.
+
+**Calibration date MQTT cmd keys:**
+
+| Key | Zone | Parameter |
+|---|---|---|
+| `set_wq_pre_ro_ph_cal_date` | Pre-RO | pH calibration date |
+| `set_wq_pre_ro_orp_cal_date` | Pre-RO | ORP calibration date |
+| `set_wq_pre_ro_ec_cal_date` | Pre-RO | EC calibration date |
+| `set_wq_post_ro_ph_cal_date` | Post-RO | pH calibration date |
+| `set_wq_post_ro_orp_cal_date` | Post-RO | ORP calibration date |
+| `set_wq_post_ro_ec_cal_date` | Post-RO | EC calibration date |
+| `set_wq_remin_ph_cal_date` | Remineralised | pH calibration date |
+| `set_wq_remin_orp_cal_date` | Remineralised | ORP calibration date |
+| `set_wq_remin_ec_cal_date` | Remineralised | EC calibration date |
+
+The value is a free-form string — ISO date format (`YYYY-MM-DD`) is recommended.
+
+To inspect stored calibration dates:
+
+```text
+sdcat /config/node.json
+```
+
+Or check the MQTT status payload — calibration date fields are always present (empty string `""` if never recorded).
+
+---
+
+## Water Quality Meter — node.json Configuration
+
+Optional runtime config in `/config/node.json` under the `water_quality` key:
 
 ```json
 {
@@ -892,14 +1047,35 @@ Optional `/config/node.json` override:
 }
 ```
 
-USB serial commands:
+| Field | Meaning | Default |
+|---|---|---|
+| `poll_interval_ms` | Time between Modbus poll cycles in ms. Minimum 5000. | 15000 |
+| `read_orp` | Global default — read ORP (alternating with pH). Per-zone override available. | true |
+| `<zone>.enabled` | Whether this zone is polled at all. | pre_ro: true, others: false |
+| `<zone>.address` | Modbus slave address (1–247). Must match address set on the physical meter. | 1, 2, 3 |
+| `<zone>.read_orp` | Per-zone ORP read enable (overrides global `read_orp`). | inherits global |
+
+**Enabling additional zones:** first confirm that each meter has a unique Modbus address using the vendor PC software (3178.exe via USB-RS485 adapter). Then update `node.json` and reboot the device. No reflash needed.
+
+---
+
+## Water Quality Meter — Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `online: false`, `last_error: read timeout`, `raw_hex: ""` | A/B polarity swapped or no power to meter | Swap A and B on one end of the cable; confirm meter AC adapter is plugged in |
+| `online: false`, `last_error: read crc mismatch`, `raw_hex` has bytes | Modbus address mismatch, or electrical noise | Confirm meter address via vendor software; shorten RS485 cable; check GND connection |
+| `online: true` but pH is 300+ or obviously wrong | Meter stuck in wrong register mode | Run serial `wq_poll` to force a fresh cycle; power-cycle the meter |
+| ORP differs from meter display by >50 mV | Normal ORP drift between read time and display check; or ORP electrode needs cleaning/recalibration | Acceptable if difference <100 mV. If consistently high offset, recalibrate ORP electrode |
+| All three zones show `disabled` | `water_quality` section missing from `node.json` or parse error | Check `sdcat /config/node.json` for syntax errors; pre_ro defaults to enabled so this is unusual |
+| `wq_status` serial command shows correct values but MQTT fields are null | Staleness watchdog — last valid read was >60s ago | Check poll cycle is running (look for `fail_count` incrementing). Meter may have been briefly disconnected. |
+
+USB serial diagnostic commands:
 
 ```text
-wq_status   # print enabled zones, online state, last error, raw frame, parsed values
-wq_poll     # request an immediate poll cycle
+wq_status   # print all zones: address, enabled, online, fail_count, last_error, raw_hex, parsed values
+wq_poll     # force an immediate poll cycle (next loop iteration)
 ```
-
-If a zone has no CRC-valid response for 60 seconds, its water quality status fields are published as `null` and `wq_<zone>_online` becomes `false`. Use `wq_<zone>_raw_hex`, `wq_<zone>_last_error`, and `wq_status` when checking wiring, A/B polarity, power, or Modbus address.
 
 ### Verify InfluxDB is receiving data
 

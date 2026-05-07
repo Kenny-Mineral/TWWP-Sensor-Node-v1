@@ -472,10 +472,7 @@ bool netOta_begin() {
         otaRollbackTriggered = true;
         clearBootFlags();
         storeSd_logEvent("[OTA] booted after rollback to previous partition");
-        return true;
-    }
-
-    if (pending == OTA_BOOT_SEEN) {
+    } else if (pending == OTA_BOOT_SEEN) {
         uint32_t bootTs = readBootTimestamp();
         char logMsg[128];
         snprintf(logMsg, sizeof(logMsg),
@@ -483,10 +480,10 @@ bool netOta_begin() {
                  static_cast<unsigned long>(bootTs));
         storeSd_logEvent(logMsg);
         netOta_rollback();
-        return false;
-    }
-
-    if (pending == OTA_BOOT_ARMED || runningPartitionPendingVerify()) {
+        // If rollback reboots, nothing below runs. If rollback fails (no previous firmware),
+        // we fall through to ArduinoOTA.begin() so local OTA remains available.
+        clearBootFlags();
+    } else if (pending == OTA_BOOT_ARMED || runningPartitionPendingVerify()) {
         if (pending == OTA_BOOT_NONE) {
             writeBootFlags(OTA_BOOT_SEEN, timeRtc_isSynced() ? timeRtc_getUnixTime() : 0UL);
         } else {
@@ -520,7 +517,7 @@ bool netOta_begin() {
         storeSd_logEvent("[OTA] ArduinoOTA upload complete");
     });
     ArduinoOTA.onError([](ota_error_t error) {
-        setError("ArduinoOTA error %u", (unsigned)error);
+        setState(OtaState::IDLE);
         char logMsg[96];
         snprintf(logMsg, sizeof(logMsg), "[OTA] ArduinoOTA failed: %u", (unsigned)error);
         storeSd_logEvent(logMsg);
@@ -528,11 +525,11 @@ bool netOta_begin() {
     ArduinoOTA.begin();
     storeSd_logEvent("[OTA] ArduinoOTA ready");
 
-    return true;
+    return otaState != OtaState::FAILED;
 }
 
 void netOta_loop() {
-    if (otaState == OtaState::IDLE) {
+    if (otaState != OtaState::DOWNLOADING && otaState != OtaState::VERIFYING && otaState != OtaState::APPLYING) {
         ArduinoOTA.handle();
     }
 

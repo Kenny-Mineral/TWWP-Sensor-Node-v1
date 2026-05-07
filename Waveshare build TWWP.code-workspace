@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../Waveshare build TWWP"
+		},
+		{
+			"name": "TWWP Sensor Node v1",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
