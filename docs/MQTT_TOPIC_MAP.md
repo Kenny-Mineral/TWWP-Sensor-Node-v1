@@ -141,9 +141,9 @@ Status fields added to `twwp/<id>/status`:
 
 ---
 
-### Water quality — RS485-3177 × 3 zones (M5, pending)
+### Water quality — RS485-3177/3178 × 3 zones (M5)
 
-Fields added to `twwp/<id>/status` once M5 firmware is implemented. Zone naming is locked in — InfluxDB schema and HA include list are already configured for these exact names.
+Fields are published in `twwp/<id>/status`. Zone naming is locked in — InfluxDB schema and HA include list are already configured for these exact names.
 
 | Status field | Type | Zone | Unit | Notes |
 |---|---|---|---|---|
@@ -159,6 +159,16 @@ Fields added to `twwp/<id>/status` once M5 firmware is implemented. Zone naming 
 | `wq_remin_orp` | int | Remineralised | mV | |
 | `wq_remin_ec` | float | Remineralised | µS/cm | |
 | `wq_remin_temp` | float | Remineralised | °C | |
+
+Diagnostic fields are also published per zone:
+
+| Status field | Type | Meaning |
+|---|---|---|
+| `wq_<zone>_humidity` | int/null | Meter humidity field from the vendor response |
+| `wq_<zone>_online` | bool | `true` when a CRC-valid frame was received within 60s |
+| `wq_<zone>_fail_count` | int | Read timeout / CRC failure counter |
+| `wq_<zone>_last_error` | string | Last driver state (`ok`, `read timeout`, `read crc mismatch`, etc.) |
+| `wq_<zone>_raw_hex` | string | Last accepted 16-byte Modbus response |
 
 HA discovery topics (one per metric per zone):
 `homeassistant/sensor/twwp_<id>_wq_<zone>_<metric>/config`

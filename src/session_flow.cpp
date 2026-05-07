@@ -10,7 +10,8 @@
 #include "time_rtc.h"
 
 static const char* SESSION_LOG_HEADER =
-    "session_id,start_ts,end_ts,duration_s,volume_out_L,volume_in_L,peak_rate_out,peak_rate_in";
+    "session_id,start_ts,end_ts,duration_s,flow_duration_s,idle_time_s,"
+    "volume_out_L,volume_in_L,peak_rate_out,peak_rate_in";
 
 static bool     sessionEnabled          = true;
 static uint32_t sessionIdleTimeoutMs    = SESSION_IDLE_TIMEOUT_MS;
@@ -28,15 +29,21 @@ static float    sessionStartTotal2 = 0.0f;
 static float    sessionPeakOut     = 0.0f;
 static float    sessionPeakIn      = 0.0f;
 
+// Flow-time tracking within a session
+static unsigned long flowSegmentStartMs = 0; // when the current flow segment started
+static unsigned long flowDurationMs     = 0; // accumulated flow time across all segments
+
 // Last completed session
-static uint32_t lastSessionId        = 0;
-static uint32_t lastSessionStartTs   = 0;
-static uint32_t lastSessionEndTs     = 0;
-static uint32_t lastSessionDurationS = 0;
-static float    lastSessionVolumeOut = 0.0f;
-static float    lastSessionVolumeIn  = 0.0f;
-static float    lastSessionPeakOut   = 0.0f;
-static float    lastSessionPeakIn    = 0.0f;
+static uint32_t lastSessionId            = 0;
+static uint32_t lastSessionStartTs       = 0;
+static uint32_t lastSessionEndTs         = 0;
+static uint32_t lastSessionDurationS     = 0;
+static uint32_t lastSessionFlowDurationS = 0;
+static uint32_t lastSessionIdleTimeS     = 0;
+static float    lastSessionVolumeOut     = 0.0f;
+static float    lastSessionVolumeIn      = 0.0f;
+static float    lastSessionPeakOut       = 0.0f;
+static float    lastSessionPeakIn        = 0.0f;
 
 // Ring buffer of last SESSIONS_RECENT_MAX sessions (oldest-first, recentHead = oldest slot)
 struct SessionRecord {
@@ -44,6 +51,8 @@ struct SessionRecord {
     uint32_t startTs;
     uint32_t endTs;
     uint32_t durationS;
+    uint32_t flowDurS;
+    uint32_t idleTimeS;
     float    volOut;
     float    volIn;
     float    peakOut;
@@ -57,17 +66,18 @@ static uint8_t       recentHead  = 0;
 // ── Ring buffer helpers ───────────────────────────────────────────────────────
 
 static void pushRecentSession(uint32_t id, uint32_t startTs, uint32_t endTs,
-                               uint32_t durationS, float volOut, float volIn,
-                               float peakOut, float peakIn) {
+                               uint32_t durationS, uint32_t flowDurS, uint32_t idleTimeS,
+                               float volOut, float volIn, float peakOut, float peakIn) {
     uint8_t slot;
     if (recentCount < SESSIONS_RECENT_MAX) {
         slot = (recentHead + recentCount) % SESSIONS_RECENT_MAX;
         recentCount++;
     } else {
-        slot      = recentHead;
+        slot       = recentHead;
         recentHead = (recentHead + 1) % SESSIONS_RECENT_MAX;
     }
-    recentSessions[slot] = { id, startTs, endTs, durationS, volOut, volIn, peakOut, peakIn };
+    recentSessions[slot] = { id, startTs, endTs, durationS, flowDurS, idleTimeS,
+                              volOut, volIn, peakOut, peakIn };
 }
 
 // ── SD persistence ────────────────────────────────────────────────────────────
@@ -83,6 +93,8 @@ static void saveRecentSessionsToSd() {
         s["sts"] = recentSessions[slot].startTs;
         s["ets"] = recentSessions[slot].endTs;
         s["dur"] = recentSessions[slot].durationS;
+        s["fds"] = recentSessions[slot].flowDurS;
+        s["its"] = recentSessions[slot].idleTimeS;
         s["vo"]  = recentSessions[slot].volOut;
         s["vi"]  = recentSessions[slot].volIn;
         s["po"]  = recentSessions[slot].peakOut;
@@ -106,6 +118,8 @@ static void loadRecentSessionsFromSd() {
             s["sts"] | 0u,
             s["ets"] | 0u,
             s["dur"] | 0u,
+            s["fds"] | 0u,
+            s["its"] | 0u,
             s["vo"]  | 0.0f,
             s["vi"]  | 0.0f,
             s["po"]  | 0.0f,
@@ -118,22 +132,24 @@ static void loadRecentSessionsFromSd() {
 // ── MQTT publish ──────────────────────────────────────────────────────────────
 
 static void publishRecentSessions() {
-    // ~120 bytes per session × 10 + overhead — 1500 is ample
-    static char buf[1500];
+    // ~150 bytes per session × 10 + overhead
+    static char buf[2048];
     JsonDocument doc;
     JsonArray arr = doc["sessions"].to<JsonArray>();
     // Newest-first for display
     for (int8_t i = (int8_t)recentCount - 1; i >= 0; i--) {
         uint8_t slot = (recentHead + (uint8_t)i) % SESSIONS_RECENT_MAX;
         JsonObject s = arr.add<JsonObject>();
-        s["id"]       = recentSessions[slot].id;
-        s["start_ts"] = recentSessions[slot].startTs;
-        s["end_ts"]   = recentSessions[slot].endTs;
-        s["dur_s"]    = recentSessions[slot].durationS;
-        s["vol_out"]  = serialized(String(recentSessions[slot].volOut, 3));
-        s["vol_in"]   = serialized(String(recentSessions[slot].volIn, 3));
-        s["peak_out"] = serialized(String(recentSessions[slot].peakOut, 3));
-        s["peak_in"]  = serialized(String(recentSessions[slot].peakIn, 3));
+        s["id"]          = recentSessions[slot].id;
+        s["start_ts"]    = recentSessions[slot].startTs;
+        s["end_ts"]      = recentSessions[slot].endTs;
+        s["dur_s"]       = recentSessions[slot].durationS;
+        s["flow_dur_s"]  = recentSessions[slot].flowDurS;
+        s["idle_s"]      = recentSessions[slot].idleTimeS;
+        s["vol_out"]     = serialized(String(recentSessions[slot].volOut,  3));
+        s["vol_in"]      = serialized(String(recentSessions[slot].volIn,   3));
+        s["peak_out"]    = serialized(String(recentSessions[slot].peakOut, 3));
+        s["peak_in"]     = serialized(String(recentSessions[slot].peakIn,  3));
     }
     size_t written = serializeJson(doc, buf, sizeof(buf));
     if (written > 0 && written < sizeof(buf)) {
@@ -148,51 +164,62 @@ void sessionFlow_republishRecentSessions() {
 // ── Session lifecycle ─────────────────────────────────────────────────────────
 
 static void finaliseSession() {
-    uint32_t endTs     = timeRtc_getUnixTime();
-    uint32_t durationS = endTs > sessionStartTs ? (endTs - sessionStartTs) : 0;
-    float    volOut    = sensorFlow_getTotalL(1) - sessionStartTotal1;
-    float    volIn     = sensorFlow_getTotalL(2) - sessionStartTotal2;
+    uint32_t endTs         = timeRtc_getUnixTime();
+    uint32_t durationS     = endTs > sessionStartTs ? (endTs - sessionStartTs) : 0;
+    uint32_t flowDurS      = (uint32_t)(flowDurationMs / 1000UL);
+    uint32_t idleTimeS     = durationS > flowDurS ? durationS - flowDurS : 0;
+    float    rawOut        = sensorFlow_getTotalL(1) - sessionStartTotal1;
+    float    rawIn         = sensorFlow_getTotalL(2) - sessionStartTotal2;
+    float    volOut        = rawOut > 0.0f ? rawOut : 0.0f;
+    float    volIn         = rawIn  > 0.0f ? rawIn  : 0.0f;
 
-    lastSessionId        = sessionId;
-    lastSessionStartTs   = sessionStartTs;
-    lastSessionEndTs     = endTs;
-    lastSessionDurationS = durationS;
-    lastSessionVolumeOut = volOut;
-    lastSessionVolumeIn  = volIn;
-    lastSessionPeakOut   = sessionPeakOut;
-    lastSessionPeakIn    = sessionPeakIn;
+    lastSessionId            = sessionId;
+    lastSessionStartTs       = sessionStartTs;
+    lastSessionEndTs         = endTs;
+    lastSessionDurationS     = durationS;
+    lastSessionFlowDurationS = flowDurS;
+    lastSessionIdleTimeS     = idleTimeS;
+    lastSessionVolumeOut     = volOut;
+    lastSessionVolumeIn      = volIn;
+    lastSessionPeakOut       = sessionPeakOut;
+    lastSessionPeakIn        = sessionPeakIn;
 
     // MQTT event — buffered so it survives offline periods
     JsonDocument doc;
-    doc["session_id"]    = sessionId;
-    doc["start_ts"]      = sessionStartTs;
-    doc["end_ts"]        = endTs;
-    doc["duration_s"]    = durationS;
-    doc["volume_out_L"]  = serialized(String(volOut,          3));
-    doc["volume_in_L"]   = serialized(String(volIn,           3));
-    doc["peak_rate_out"] = serialized(String(sessionPeakOut,  3));
-    doc["peak_rate_in"]  = serialized(String(sessionPeakIn,   3));
-    char payload[256];
+    doc["session_id"]      = sessionId;
+    doc["start_ts"]        = sessionStartTs;
+    doc["end_ts"]          = endTs;
+    doc["duration_s"]      = durationS;
+    doc["flow_duration_s"] = flowDurS;
+    doc["idle_time_s"]     = idleTimeS;
+    doc["volume_out_L"]    = serialized(String(volOut,         3));
+    doc["volume_in_L"]     = serialized(String(volIn,          3));
+    doc["peak_rate_out"]   = serialized(String(sessionPeakOut, 3));
+    doc["peak_rate_in"]    = serialized(String(sessionPeakIn,  3));
+    char payload[320];
     if (serializeJson(doc, payload, sizeof(payload)) > 0) {
         netMqtt_publishSub(TOPIC_SESSION, payload);
     }
 
     // SD session log
-    char row[160];
-    snprintf(row, sizeof(row), "%lu,%lu,%lu,%lu,%.3f,%.3f,%.3f,%.3f",
+    char row[192];
+    snprintf(row, sizeof(row), "%lu,%lu,%lu,%lu,%lu,%lu,%.3f,%.3f,%.3f,%.3f",
              (unsigned long)sessionId,
              (unsigned long)sessionStartTs,
              (unsigned long)endTs,
              (unsigned long)durationS,
+             (unsigned long)flowDurS,
+             (unsigned long)idleTimeS,
              volOut, volIn,
              sessionPeakOut, sessionPeakIn);
     storeSd_appendCsvRow(SD_SESSION_LOG_PATH, row, SESSION_LOG_HEADER);
 
-    Serial.printf("[SESSION] #%lu ended — out=%.3fL in=%.3fL dur=%lus\n",
-                  (unsigned long)sessionId, volOut, volIn, (unsigned long)durationS);
+    Serial.printf("[SESSION] #%lu ended — out=%.3fL in=%.3fL dur=%lus flow=%lus idle=%lus\n",
+                  (unsigned long)sessionId, volOut, volIn,
+                  (unsigned long)durationS, (unsigned long)flowDurS, (unsigned long)idleTimeS);
 
     // Ring buffer + retained MQTT + SD snapshot
-    pushRecentSession(sessionId, sessionStartTs, endTs, durationS,
+    pushRecentSession(sessionId, sessionStartTs, endTs, durationS, flowDurS, idleTimeS,
                       volOut, volIn, sessionPeakOut, sessionPeakIn);
     publishRecentSessions();
     saveRecentSessionsToSd();
@@ -210,9 +237,9 @@ static void finaliseSession() {
 bool sessionFlow_begin() {
     Preferences prefs;
     prefs.begin("session", true);
-    sessionId              = prefs.getUInt("sid",      0);
-    sessionEnabled         = prefs.getBool("en",       true);
-    sessionIdleTimeoutMs   = (uint32_t)prefs.getUInt("idle_s",  90) * 1000UL;
+    sessionId               = prefs.getUInt("sid",      0);
+    sessionEnabled          = prefs.getBool("en",       true);
+    sessionIdleTimeoutMs    = (uint32_t)prefs.getUInt("idle_s",  90) * 1000UL;
     sessionFlowThresholdLpm = prefs.getFloat("flow_thr", FLOW_ACTIVE_THRESHOLD_LPM);
     prefs.end();
 
@@ -229,8 +256,8 @@ bool sessionFlow_begin() {
 void sessionFlow_loop() {
     if (!sessionEnabled) return;
 
-    float rate1  = sensorFlow_getRateLpm(1);
-    float rate2  = sensorFlow_getRateLpm(2);
+    float rate1   = sensorFlow_getRateLpm(1);
+    float rate2   = sensorFlow_getRateLpm(2);
     bool  anyFlow = (rate1 > sessionFlowThresholdLpm || rate2 > sessionFlowThresholdLpm);
 
     switch (sessionState) {
@@ -242,6 +269,8 @@ void sessionFlow_loop() {
                 sessionStartTotal2 = sensorFlow_getTotalL(2);
                 sessionPeakOut     = rate1;
                 sessionPeakIn      = rate2;
+                flowDurationMs     = 0;
+                flowSegmentStartMs = millis();
                 Serial.printf("[SESSION] #%lu started\n", (unsigned long)sessionId);
             }
             break;
@@ -250,6 +279,8 @@ void sessionFlow_loop() {
             if (rate1 > sessionPeakOut) sessionPeakOut = rate1;
             if (rate2 > sessionPeakIn)  sessionPeakIn  = rate2;
             if (!anyFlow) {
+                // Accumulate this flow segment before starting idle wait
+                flowDurationMs      += millis() - flowSegmentStartMs;
                 sessionState         = SessionState::ENDING;
                 sessionEndingStartMs = millis();
             }
@@ -257,7 +288,9 @@ void sessionFlow_loop() {
 
         case SessionState::ENDING:
             if (anyFlow) {
-                sessionState = SessionState::ACTIVE;
+                // Flow resumed — start a new segment
+                flowSegmentStartMs = millis();
+                sessionState       = SessionState::ACTIVE;
                 if (rate1 > sessionPeakOut) sessionPeakOut = rate1;
                 if (rate2 > sessionPeakIn)  sessionPeakIn  = rate2;
             } else if (millis() - sessionEndingStartMs >= sessionIdleTimeoutMs) {
@@ -316,18 +349,22 @@ void sessionFlow_setEnabled(bool en) {
 }
 
 void sessionFlow_factoryReset() {
-    sessionState         = SessionState::IDLE;
-    sessionId            = 0;
-    lastSessionId        = 0;
-    lastSessionStartTs   = 0;
-    lastSessionEndTs     = 0;
-    lastSessionDurationS = 0;
-    lastSessionVolumeOut = 0.0f;
-    lastSessionVolumeIn  = 0.0f;
-    lastSessionPeakOut   = 0.0f;
-    lastSessionPeakIn    = 0.0f;
-    recentCount          = 0;
-    recentHead           = 0;
+    sessionState             = SessionState::IDLE;
+    sessionId                = 0;
+    flowDurationMs           = 0;
+    flowSegmentStartMs       = 0;
+    lastSessionId            = 0;
+    lastSessionStartTs       = 0;
+    lastSessionEndTs         = 0;
+    lastSessionDurationS     = 0;
+    lastSessionFlowDurationS = 0;
+    lastSessionIdleTimeS     = 0;
+    lastSessionVolumeOut     = 0.0f;
+    lastSessionVolumeIn      = 0.0f;
+    lastSessionPeakOut       = 0.0f;
+    lastSessionPeakIn        = 0.0f;
+    recentCount              = 0;
+    recentHead               = 0;
     Preferences prefs;
     prefs.begin("session", false);
     prefs.clear();
@@ -335,17 +372,19 @@ void sessionFlow_factoryReset() {
     sessionEnabled          = true;
     sessionIdleTimeoutMs    = SESSION_IDLE_TIMEOUT_MS;
     sessionFlowThresholdLpm = FLOW_ACTIVE_THRESHOLD_LPM;
-    publishRecentSessions();   // publish empty array
+    publishRecentSessions();
     saveRecentSessionsToSd();
     storeSd_logEvent("[SESSION] factory reset — session data cleared");
     Serial.println("[SESSION] factory reset — session data cleared");
 }
 
-uint32_t sessionFlow_getLastId()        { return lastSessionId; }
-uint32_t sessionFlow_getLastStartTs()   { return lastSessionStartTs; }
-uint32_t sessionFlow_getLastEndTs()     { return lastSessionEndTs; }
-uint32_t sessionFlow_getLastDurationS() { return lastSessionDurationS; }
-float    sessionFlow_getLastVolumeOut() { return lastSessionVolumeOut; }
-float    sessionFlow_getLastVolumeIn()  { return lastSessionVolumeIn; }
-float    sessionFlow_getLastPeakOut()   { return lastSessionPeakOut; }
-float    sessionFlow_getLastPeakIn()    { return lastSessionPeakIn; }
+uint32_t sessionFlow_getLastId()            { return lastSessionId; }
+uint32_t sessionFlow_getLastStartTs()       { return lastSessionStartTs; }
+uint32_t sessionFlow_getLastEndTs()         { return lastSessionEndTs; }
+uint32_t sessionFlow_getLastDurationS()     { return lastSessionDurationS; }
+uint32_t sessionFlow_getLastFlowDurationS() { return lastSessionFlowDurationS; }
+uint32_t sessionFlow_getLastIdleTimeS()     { return lastSessionIdleTimeS; }
+float    sessionFlow_getLastVolumeOut()     { return lastSessionVolumeOut; }
+float    sessionFlow_getLastVolumeIn()      { return lastSessionVolumeIn; }
+float    sessionFlow_getLastPeakOut()       { return lastSessionPeakOut; }
+float    sessionFlow_getLastPeakIn()        { return lastSessionPeakIn; }

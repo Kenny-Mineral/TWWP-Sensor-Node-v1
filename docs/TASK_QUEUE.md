@@ -159,21 +159,22 @@ Server-side analytics layer. Local project: `/home/kenny/twwp-monitoring/`. Not 
 
 ---
 
-## M5 — YiErYi RS485-3177 (water quality sensors)
+## M5 — YiErYi RS485-3177/3178 (water quality sensors)
 
 Three sensors: pre-RO filter, post-RO filter, remineralised. Each: pH, ORP, EC, temp.
-Blocked on hardware. When unblocked:
+Firmware driver implemented from the vendor Modbus register sheet. Hardware response validation still required on the Waveshare RS485 port.
 
-- [ ] Use ESPHome to confirm Modbus register addresses and baud rate.
-- [ ] Read `references/Modbus Communication Data Format-V1.01.xlsx` to confirm slave address, baud, register map.
-- [ ] Add `sensor_yieryi.{h,cpp}` using UART1 (`UART_MODE_RS485_HALF_DUPLEX`, GPIO17/18, GPIO21 auto DE/RE).
-- [ ] Publish per-zone fields in `twwp/<id>/status` JSON — field names locked in (see MQTT_TOPIC_MAP.md):
+- [x] Read vendor `Modbus Communication Data Format-V1.01.xlsx` to confirm 9600 8N1, read register `0x0000` count `4`, 16-byte response, and pH/ORP mode register `0x0005`.
+- [x] Add `sensor_yieryi.{h,cpp}` using UART1 (`UART_MODE_RS485_HALF_DUPLEX`, GPIO17/18, GPIO21 auto DE/RE).
+- [x] Publish per-zone fields in `twwp/<id>/status` JSON — field names locked in (see MQTT_TOPIC_MAP.md):
   `wq_pre_ro_ph`, `wq_pre_ro_orp`, `wq_pre_ro_ec`, `wq_pre_ro_temp`,
   `wq_post_ro_ph`, `wq_post_ro_orp`, `wq_post_ro_ec`, `wq_post_ro_temp`,
   `wq_remin_ph`, `wq_remin_orp`, `wq_remin_ec`, `wq_remin_temp`.
-- [ ] HA MQTT discovery: 12 sensor entities (4 metrics × 3 zones) — names locked in, Grafana/InfluxDB already configured for them.
-- [ ] Staleness watchdog: no successful read in 60s → mark unavailable.
+- [x] HA MQTT discovery: 12 sensor entities (4 metrics × 3 zones) — names locked in, Grafana/InfluxDB already configured for them.
+- [x] Staleness watchdog: no successful read in 60s → status values become `null`.
 - [ ] Update `SensorData` struct in `FIRMWARE_ARCHITECTURE.md` (multi-zone fields already documented).
+- [ ] Hardware test: flash firmware, wire one meter on RS485, run serial `wq_status`, and confirm CRC-valid raw frame plus parsed pH/ORP/EC/temp in MQTT.
+- [ ] Confirm whether all three probes have unique Modbus addresses; update `/config/node.json` before enabling post-RO and remineralised zones.
 
 ---
 

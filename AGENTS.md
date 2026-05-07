@@ -8,27 +8,35 @@
 
 ## Before stopping any session
 
-Update `docs/SESSION.md`:
-- Last done: what you completed
-- In progress: uncommitted changes, or "none"
-- Next step: next unchecked task in TASK_QUEUE.md
+Gather context first — do not ask open questions yet:
+1. Read `docs/SESSION.md`
+2. Run: `git log --oneline -5`
+3. Run: `git status --short`
+4. Read `docs/TASK_QUEUE.md`
+
+Then present this to the user and wait for confirmation:
+
+---
+**Handoff — confirm or correct before I commit:**
+
+**Last done:** [derived from session work, git log, SESSION.md — 1–2 sentences]
+**Uncommitted files:** [from git status, or "none"]
+**Next step:** [first unchecked [ ] task from TASK_QUEUE.md]
+
+**Docs to update — yes/no:**
+- USER_OPERATIONS.md — anything a user operating the device needs to know?
+- MQTT_TOPIC_MAP.md — any new MQTT topics?
+- PIN_ALLOCATION.md — any new GPIO pins?
+---
+
+Apply any corrections the user gives. Make any doc updates they confirm. Then update `docs/SESSION.md`:
+- Last done: [confirmed summary]
+- In progress: [uncommitted files, or "none"]
+- Next step: [confirmed next step]
 - Tool last used: codex
 - Updated: YYYY-MM-DD HH:MM
 
 Commit: `git add docs/SESSION.md && git commit -m "chore: session handoff [codex]"`
-
-## User documentation rule
-
-Update `docs/USER_OPERATIONS.md` in the same commit whenever a change affects user-facing operation, including:
-- upload, monitor, setup, or reset steps
-- serial commands or command syntax
-- `/config/node.json` fields
-- expected boot or monitor output
-- SD layout, log files, retention, export, or cleanup behavior
-- MQTT/offload behavior visible to the user
-- troubleshooting steps discovered during testing
-
-If unsure, update the doc. Keep `docs/SESSION.md` aligned with any operational doc changes.
 
 ## Locked decisions — never change
 

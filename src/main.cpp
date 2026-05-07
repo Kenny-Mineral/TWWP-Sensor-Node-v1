@@ -16,9 +16,11 @@
 #include "sensor_leak.h"
 #include "sensor_flow.h"
 #include "session_flow.h"
+#include "sensor_voltage.h"
+#include "sensor_yieryi.h"
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
-#include "actuator_solenoid_stub.h"
+#include "actuator_valve.h"
 
 #ifndef NODE_FIRMWARE_VERSION
 #define NODE_FIRMWARE_VERSION "0.0.0"
@@ -33,6 +35,72 @@ static const char* leakStateText() {
 static bool serializeDoc(JsonDocument& doc, char* out, size_t outLen) {
     size_t written = serializeJson(doc, out, outLen);
     return written > 0 && written < outLen;
+}
+
+static void setJsonFloatOrNull(JsonDocument& doc, const char* key, bool valid, float value, uint8_t decimals) {
+    if (!valid) {
+        doc[key] = nullptr;
+        return;
+    }
+    doc[key] = serialized(String(value, static_cast<unsigned int>(decimals)));
+}
+
+static void setJsonIntOrNull(JsonDocument& doc, const char* key, bool valid, int value) {
+    if (!valid) {
+        doc[key] = nullptr;
+        return;
+    }
+    doc[key] = value;
+}
+
+static void addWaterQualityStatus(JsonDocument& doc, uint8_t zone, const char* prefix) {
+    char key[40];
+
+    snprintf(key, sizeof(key), "wq_%s_ph", prefix);
+    setJsonFloatOrNull(doc, key, sensorYieryi_hasPh(zone), sensorYieryi_getPh(zone), 2);
+
+    snprintf(key, sizeof(key), "wq_%s_orp", prefix);
+    setJsonIntOrNull(doc, key, sensorYieryi_hasOrp(zone), sensorYieryi_getOrpMv(zone));
+
+    snprintf(key, sizeof(key), "wq_%s_ec", prefix);
+    setJsonFloatOrNull(doc, key, sensorYieryi_hasEc(zone), sensorYieryi_getEcUsCm(zone), 0);
+
+    snprintf(key, sizeof(key), "wq_%s_temp", prefix);
+    setJsonFloatOrNull(doc, key, sensorYieryi_hasTemp(zone), sensorYieryi_getTempC(zone), 1);
+
+    snprintf(key, sizeof(key), "wq_%s_humidity", prefix);
+    setJsonIntOrNull(doc, key, sensorYieryi_hasEc(zone), sensorYieryi_getHumidityPct(zone));
+
+    snprintf(key, sizeof(key), "wq_%s_online", prefix);
+    doc[key] = sensorYieryi_isOnline(zone);
+
+    snprintf(key, sizeof(key), "wq_%s_fail_count", prefix);
+    doc[key] = sensorYieryi_getFailCount(zone);
+
+    snprintf(key, sizeof(key), "wq_%s_last_error", prefix);
+    doc[key] = sensorYieryi_getLastError(zone);
+
+    snprintf(key, sizeof(key), "wq_%s_raw_hex", prefix);
+    doc[key] = sensorYieryi_getRawHex(zone);
+}
+
+static const char* csvFloatOrBlank(char* out, size_t outLen, bool valid, float value, uint8_t decimals) {
+    (void)outLen;
+    if (!valid) {
+        out[0] = '\0';
+        return out;
+    }
+    dtostrf(value, 0, decimals, out);
+    return out;
+}
+
+static const char* csvIntOrBlank(char* out, size_t outLen, bool valid, int value) {
+    if (!valid) {
+        out[0] = '\0';
+        return out;
+    }
+    snprintf(out, outLen, "%d", value);
+    return out;
 }
 
 static bool publishM0Status(bool retain, bool bufferIfOffline) {
@@ -83,19 +151,19 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["k_applied_2"]  = sensorFlow_getAppliedKFactor(2);
     doc["pulses_raw_1"] = (unsigned long long)sensorFlow_getTotalPulses(1);
     doc["pulses_raw_2"] = (unsigned long long)sensorFlow_getTotalPulses(2);
-    doc["flow_avg_window_1"] = serialized(String(sensorFlow_getFlowAvgLpm(1), 3));
-    doc["flow_avg_window_2"] = serialized(String(sensorFlow_getFlowAvgLpm(2), 3));
     doc["k_table_1"] = serialized(sensorFlow_getKTableJson(1));
     doc["k_table_2"] = serialized(sensorFlow_getKTableJson(2));
     doc["debounce_us_1"] = sensorFlow_getDebounceUs(1);
     doc["debounce_us_2"] = sensorFlow_getDebounceUs(2);
     doc["flow_avg_window"] = sensorFlow_getFlowAvgWindow();
-    doc["session_last_id"]       = sessionFlow_getLastId();
-    doc["session_last_start_ts"] = sessionFlow_getLastStartTs();
-    doc["session_last_end_ts"]   = sessionFlow_getLastEndTs();
-    doc["session_last_dur_s"]    = sessionFlow_getLastDurationS();
-    doc["session_last_vol_out"]  = sessionFlow_getLastVolumeOut();
-    doc["session_last_vol_in"]   = sessionFlow_getLastVolumeIn();
+    doc["session_last_id"]         = sessionFlow_getLastId();
+    doc["session_last_start_ts"]   = sessionFlow_getLastStartTs();
+    doc["session_last_end_ts"]     = sessionFlow_getLastEndTs();
+    doc["session_last_dur_s"]      = sessionFlow_getLastDurationS();
+    doc["session_last_flow_dur_s"] = sessionFlow_getLastFlowDurationS();
+    doc["session_last_idle_s"]     = sessionFlow_getLastIdleTimeS();
+    doc["session_last_vol_out"]    = sessionFlow_getLastVolumeOut();
+    doc["session_last_vol_in"]     = sessionFlow_getLastVolumeIn();
     doc["session_enabled"]          = sessionFlow_isEnabled();
     doc["session_idle_timeout_s"]   = sessionFlow_getIdleTimeoutS();
     doc["flow_threshold_lpm"]       = sessionFlow_getFlowThreshold();
@@ -107,7 +175,22 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
         doc["ota_error"] = netOta_getError();
     }
 
-    char payload[2200];
+    doc["supply_voltage"]         = sensorVoltage_getVoltageV();
+    doc["supply_voltage_divider"] = sensorVoltage_getDividerVoltageV();
+    doc["supply_voltage_pct"]     = sensorVoltage_getPercentPct();
+    doc["supply_voltage_state"]   = sensorVoltage_getState();
+    doc["voltage_v_min"]        = sensorVoltage_getVMin();
+    doc["voltage_v_max"]        = sensorVoltage_getVMax();
+    doc["voltage_cal_factor"]   = sensorVoltage_getCalFactor();
+
+    doc["valve_open"] = actuatorValve_isOpen();
+    doc["valve_auto"] = actuatorValve_isAuto();
+
+    addWaterQualityStatus(doc, YIERYI_ZONE_PRE_RO, "pre_ro");
+    addWaterQualityStatus(doc, YIERYI_ZONE_POST_RO, "post_ro");
+    addWaterQualityStatus(doc, YIERYI_ZONE_REMIN, "remin");
+
+    char payload[4096];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
         Serial.println("[M0] status JSON too large");
         return false;
@@ -140,7 +223,7 @@ static void serviceSerialConsole() {
         Serial.println("[SERIAL] console connected");
         Serial.print("[SERIAL] leak state: ");
         Serial.println(leakStateText());
-        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune, ota <url> [md5], ota_state, reset_flow_today[_1/_2], reset_flow_totals[_1/_2]");
+        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune, ota <url> [md5], ota_state, wq_status, wq_poll, reset_flow_today[_1/_2], reset_flow_totals[_1/_2]");
     }
 
     wasConnected = connected;
@@ -210,9 +293,15 @@ static void serviceSerialConsole() {
                                   (unsigned)netOta_getProgressPct(),
                                   netOta_getError() ? netOta_getError() : "none",
                                   netOta_getUrl() ? netOta_getUrl() : "none");
+                } else if (strcmp(cmd, "wq_status") == 0) {
+                    sensorYieryi_printStatus(Serial);
+                } else if (strcmp(cmd, "wq_poll") == 0) {
+                    sensorYieryi_forcePoll();
+                    Serial.println("[YIERYI] poll requested");
                 } else if (strcmp(cmd, "help") == 0) {
                     Serial.println("[SERIAL] SD:      sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
                     Serial.println("[SERIAL] OTA:     ota <url> [md5], ota_state");
+                    Serial.println("[SERIAL] WQ:      wq_status, wq_poll");
                     Serial.println("[SERIAL] today:   reset_flow_today[_1/_2]");
                     Serial.println("[SERIAL] week:    reset_flow_week[_1/_2]");
                     Serial.println("[SERIAL] month:   reset_flow_month[_1/_2]");
@@ -490,7 +579,7 @@ static bool publishHaDiscoveryFlow() {
         fillHaSubDevice(doc, subId, subName);
         doc["device"]["model"] = sensorModel;
 
-        char payload[640];
+        char payload[896];
         if (!serializeDoc(doc, payload, sizeof(payload))) {
             Serial.println("[MQTT] debounce number JSON too large");
             ok = false;
@@ -530,7 +619,7 @@ static bool publishHaDiscoveryFlow() {
         doc["payload_not_available"] = "offline";
         fillHaDevice(doc);
 
-        char payload[640];
+        char payload[768];
         if (!serializeDoc(doc, payload, sizeof(payload))) {
             Serial.println("[MQTT] flow_avg_window number JSON too large");
             ok = false;
@@ -622,17 +711,19 @@ static bool publishHaDiscoverySession() {
         doc["payload_available"]    = "online";
         doc["payload_not_available"] = "offline";
         fillHaDevice(doc);
-        char payload[512];
+        char payload[640];
         if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
         char topic[128];
         snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    pub("twwp_" NODE_ID "_session_last_id",      "Last Session ID",          "session_last_id",       "",  "");
-    pub("twwp_" NODE_ID "_session_last_dur_s",   "Last Session Duration",    "session_last_dur_s",    "s", "measurement");
-    pub("twwp_" NODE_ID "_session_last_vol_out", "Last Session Volume Out",  "session_last_vol_out",  "L", "measurement");
-    pub("twwp_" NODE_ID "_session_last_vol_in",  "Last Session Volume In",   "session_last_vol_in",   "L", "measurement");
+    pub("twwp_" NODE_ID "_session_last_id",         "Last Session ID",          "session_last_id",           "",  "");
+    pub("twwp_" NODE_ID "_session_last_dur_s",      "Last Session Duration",    "session_last_dur_s",        "s", "measurement");
+    pub("twwp_" NODE_ID "_session_last_flow_dur_s", "Last Session Flow Time",   "session_last_flow_dur_s",   "s", "measurement");
+    pub("twwp_" NODE_ID "_session_last_idle_s",     "Last Session Idle Time",   "session_last_idle_s",       "s", "measurement");
+    pub("twwp_" NODE_ID "_session_last_vol_out",    "Last Session Volume Out",  "session_last_vol_out",      "L", "measurement");
+    pub("twwp_" NODE_ID "_session_last_vol_in",     "Last Session Volume In",   "session_last_vol_in",       "L", "measurement");
 
     Serial.print("[MQTT] HA session discovery ");
     Serial.println(ok ? "published" : "partial");
@@ -667,7 +758,7 @@ static bool publishHaDiscoverySessionConfig() {
         doc["payload_available"]    = "online";
         doc["payload_not_available"] = "offline";
         fillHaDevice(doc);
-        char payload[640];
+        char payload[768];
         if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
         char topic[128];
         snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", uid);
@@ -762,7 +853,7 @@ static bool publishHaDiscoveryResetButtons() {
         } else {
             fillHaDevice(doc);
         }
-        char payload[512];
+        char payload[640];
         if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
         char topic[128];
         snprintf(topic, sizeof(topic), "homeassistant/button/%s/config", uid);
@@ -818,7 +909,7 @@ static bool publishHaDiscoverySessionSwitch() {
     doc["payload_not_available"] = "offline";
     fillHaDevice(doc);
 
-    char payload[512];
+    char payload[640];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
         Serial.println("[MQTT] session switch JSON too large");
         return false;
@@ -899,6 +990,191 @@ static bool publishHaDiscoveryOta() {
     return ok;
 }
 
+static bool publishHaDiscoveryVoltage() {
+    bool ok = true;
+
+    // Voltage sensor
+    {
+        JsonDocument doc;
+        doc["name"]              = "TWWP " NODE_ID " Supply Voltage";
+        doc["unique_id"]         = "twwp_" NODE_ID "_supply_voltage";
+        doc["object_id"]         = "twwp_" NODE_ID "_supply_voltage";
+        doc["device_class"]      = "voltage";
+        doc["state_class"]       = "measurement";
+        doc["unit_of_measurement"] = "V";
+        doc["state_topic"]       = TOPIC_STATUS;
+        doc["value_template"]    = "{{ value_json.supply_voltage | round(2) }}";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish(
+                "homeassistant/sensor/twwp_" NODE_ID "_supply_voltage/config", payload, true);
+        } else { ok = false; }
+    }
+
+    // Battery % sensor
+    {
+        JsonDocument doc;
+        doc["name"]              = "TWWP " NODE_ID " Battery";
+        doc["unique_id"]         = "twwp_" NODE_ID "_supply_voltage_pct";
+        doc["object_id"]         = "twwp_" NODE_ID "_supply_voltage_pct";
+        doc["device_class"]      = "battery";
+        doc["state_class"]       = "measurement";
+        doc["unit_of_measurement"] = "%";
+        doc["state_topic"]       = TOPIC_STATUS;
+        doc["value_template"]    = "{{ value_json.supply_voltage_pct | round(1) }}";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish(
+                "homeassistant/sensor/twwp_" NODE_ID "_supply_voltage_pct/config", payload, true);
+        } else { ok = false; }
+    }
+
+    // Raw divider voltage diagnostic sensor
+    {
+        JsonDocument doc;
+        doc["name"]                = "TWWP " NODE_ID " Supply Voltage Divider";
+        doc["unique_id"]           = "twwp_" NODE_ID "_supply_voltage_divider";
+        doc["object_id"]           = "twwp_" NODE_ID "_supply_voltage_divider";
+        doc["device_class"]        = "voltage";
+        doc["state_class"]         = "measurement";
+        doc["entity_category"]     = "diagnostic";
+        doc["unit_of_measurement"] = "V";
+        doc["state_topic"]         = TOPIC_STATUS;
+        doc["value_template"]      = "{{ value_json.supply_voltage_divider | round(3) }}";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish(
+                "homeassistant/sensor/twwp_" NODE_ID "_supply_voltage_divider/config", payload, true);
+        } else { ok = false; }
+    }
+
+    // Battery state sensor
+    {
+        JsonDocument doc;
+        doc["name"]              = "TWWP " NODE_ID " Battery State";
+        doc["unique_id"]         = "twwp_" NODE_ID "_supply_voltage_state";
+        doc["object_id"]         = "twwp_" NODE_ID "_supply_voltage_state";
+        doc["state_topic"]       = TOPIC_STATUS;
+        doc["value_template"]    = "{{ value_json.supply_voltage_state }}";
+        doc["icon"]              = "mdi:battery-charging";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish(
+                "homeassistant/sensor/twwp_" NODE_ID "_supply_voltage_state/config", payload, true);
+        } else { ok = false; }
+    }
+
+    // Config number: V Min
+    auto pubVoltageNumber = [&ok](const char* uid, const char* name,
+                                   const char* valueKey, const char* cmdKey,
+                                   float minVal, float maxVal, float step) {
+        JsonDocument doc;
+        doc["name"]              = name;
+        doc["unique_id"]         = uid;
+        doc["object_id"]         = uid;
+        doc["entity_category"]   = "config";
+        doc["state_topic"]       = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+        doc["value_template"]    = tmpl;
+        doc["command_topic"]     = TOPIC_CMD;
+        char cmdTmpl[80];
+        snprintf(cmdTmpl, sizeof(cmdTmpl), "{\"%s\": {{ value }}}", cmdKey);
+        doc["command_template"]  = cmdTmpl;
+        doc["unit_of_measurement"] = "V";
+        doc["min"]               = minVal;
+        doc["max"]               = maxVal;
+        doc["step"]              = step;
+        doc["mode"]              = "box";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    pubVoltageNumber("twwp_" NODE_ID "_voltage_v_min", "Battery Empty Voltage",
+                     "voltage_v_min", "set_v_min", 9.0f, 13.0f, 0.1f);
+    pubVoltageNumber("twwp_" NODE_ID "_voltage_v_max", "Battery Full Voltage",
+                     "voltage_v_max", "set_v_max", 12.0f, 16.0f, 0.1f);
+
+    // Config number: Cal Factor (unitless, but we use the same helper with "×" unit)
+    {
+        JsonDocument doc;
+        doc["name"]              = "Battery Voltage Cal Factor";
+        doc["unique_id"]         = "twwp_" NODE_ID "_voltage_cal_factor";
+        doc["object_id"]         = "twwp_" NODE_ID "_voltage_cal_factor";
+        doc["entity_category"]   = "config";
+        doc["state_topic"]       = TOPIC_STATUS;
+        doc["value_template"]    = "{{ value_json.voltage_cal_factor }}";
+        doc["command_topic"]     = TOPIC_CMD;
+        doc["command_template"]  = "{\"set_voltage_cal\": {{ value }}}";
+        doc["min"]               = 0.8f;
+        doc["max"]               = 1.2f;
+        doc["step"]              = 0.001f;
+        doc["mode"]              = "box";
+        doc["icon"]              = "mdi:tune";
+        doc["availability_topic"]   = TOPIC_LWT;
+        doc["payload_available"]    = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish(
+                "homeassistant/number/twwp_" NODE_ID "_voltage_cal_factor/config", payload, true);
+        } else { ok = false; }
+    }
+
+    Serial.print("[MQTT] HA voltage discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
+static bool publishHaDiscoveryValve() {
+    JsonDocument doc;
+    doc["name"]            = "TWWP " NODE_ID " Valve";
+    doc["unique_id"]       = "twwp_" NODE_ID "_valve_open";
+    doc["object_id"]       = "twwp_" NODE_ID "_valve_open";
+    doc["device_class"]    = "opening";
+    doc["state_topic"]     = TOPIC_STATUS;
+    doc["value_template"]  = "{{ 'ON' if value_json.valve_open else 'OFF' }}";
+    doc["availability_topic"]   = TOPIC_LWT;
+    doc["payload_available"]    = "online";
+    doc["payload_not_available"] = "offline";
+    fillHaDevice(doc);
+
+    char payload[640];
+    if (!serializeDoc(doc, payload, sizeof(payload))) {
+        Serial.println("[MQTT] valve HA discovery JSON too large");
+        return false;
+    }
+    bool ok = netMqtt_publish(
+        "homeassistant/binary_sensor/twwp_" NODE_ID "_valve_open/config", payload, true);
+    Serial.print("[MQTT] HA valve discovery ");
+    Serial.println(ok ? "published" : "failed");
+    return ok;
+}
+
 static bool publishHaDiscoveryEfficiency() {
     bool ok = true;
 
@@ -927,7 +1203,7 @@ static bool publishHaDiscoveryEfficiency() {
         fillHaSubDevice(doc, "twwp_" NODE_ID "_filter", "RO Filter");
         doc["device"]["model"] = "Calculated";
 
-        char payload[512];
+        char payload[640];
         if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
         char topic[128];
         snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", e.uid);
@@ -935,6 +1211,88 @@ static bool publishHaDiscoveryEfficiency() {
     }
 
     Serial.print("[MQTT] HA efficiency discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
+static bool publishHaWaterQualitySensor(const char* uid, const char* name, const char* valueKey,
+                                        const char* unit, const char* deviceClass,
+                                        const char* stateClass, const char* subId,
+                                        const char* subName) {
+    JsonDocument doc;
+    doc["name"]       = name;
+    doc["unique_id"]  = uid;
+    doc["object_id"]  = uid;
+    doc["state_topic"] = TOPIC_STATUS;
+    char tmpl[80];
+    snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+    doc["value_template"] = tmpl;
+    if (unit && unit[0]) {
+        doc["unit_of_measurement"] = unit;
+    }
+    if (deviceClass && deviceClass[0]) {
+        doc["device_class"] = deviceClass;
+    }
+    if (stateClass && stateClass[0]) {
+        doc["state_class"] = stateClass;
+    }
+    doc["availability_topic"] = TOPIC_LWT;
+    doc["payload_available"] = "online";
+    doc["payload_not_available"] = "offline";
+    fillHaSubDevice(doc, subId, subName);
+    doc["device"]["model"] = "YiErYi 3178 RS485 Modbus";
+
+    char payload[768];
+    if (!serializeDoc(doc, payload, sizeof(payload))) {
+        Serial.println("[MQTT] water quality HA discovery JSON too large");
+        return false;
+    }
+    char topic[128];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
+    return netMqtt_publish(topic, payload, true);
+}
+
+static bool publishHaDiscoveryWaterQuality() {
+    bool ok = true;
+
+    struct ZoneDef {
+        const char* suffix;
+        const char* name;
+        const char* subId;
+    };
+    const ZoneDef zoneDefs[] = {
+        { "pre_ro",  "Pre-RO Water Quality",        "twwp_" NODE_ID "_wq_pre_ro" },
+        { "post_ro", "Post-RO Water Quality",       "twwp_" NODE_ID "_wq_post_ro" },
+        { "remin",   "Remineralised Water Quality", "twwp_" NODE_ID "_wq_remin" },
+    };
+
+    for (const auto& z : zoneDefs) {
+        char uid[64];
+        char key[32];
+        char name[64];
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ph", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_ph", z.suffix);
+        snprintf(name, sizeof(name), "%s pH", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "pH", "", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_orp", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_orp", z.suffix);
+        snprintf(name, sizeof(name), "%s ORP", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "mV", "voltage", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ec", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_ec", z.suffix);
+        snprintf(name, sizeof(name), "%s EC", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "µS/cm", "", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_temp", z.suffix);
+        snprintf(key, sizeof(key), "wq_%s_temp", z.suffix);
+        snprintf(name, sizeof(name), "%s Temperature", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "°C", "temperature", "measurement", z.subId, z.name);
+    }
+
+    Serial.print("[MQTT] HA water quality discovery ");
     Serial.println(ok ? "published" : "partial");
     return ok;
 }
@@ -955,6 +1313,9 @@ static void publishOnlineState() {
     publishHaDiscoveryResetButtons();
     publishHaDiscoverySessionSwitch();
     publishHaDiscoveryEfficiency();
+    publishHaDiscoveryVoltage();
+    publishHaDiscoveryValve();
+    publishHaDiscoveryWaterQuality();
     publishM0Status(true, false);
     sessionFlow_republishRecentSessions();
     lastHeartbeatMs = millis();
@@ -1064,6 +1425,15 @@ static void handleCmd(const char* payload) {
     if (!doc["set_flow_avg_window"].isNull()) {
         sensorFlow_setFlowAvgWindow((uint8_t)constrain(doc["set_flow_avg_window"].as<int>(), 1, 20));
     }
+    if (!doc["set_v_min"].isNull()) {
+        sensorVoltage_setVMin(doc["set_v_min"].as<float>());
+    }
+    if (!doc["set_v_max"].isNull()) {
+        sensorVoltage_setVMax(doc["set_v_max"].as<float>());
+    }
+    if (!doc["set_voltage_cal"].isNull()) {
+        sensorVoltage_setCalFactor(doc["set_voltage_cal"].as<float>());
+    }
     if (!doc["ota_url"].isNull()) {
         const char* url = doc["ota_url"].as<const char*>();
         const char* md5 = doc["ota_md5"].isNull() ? nullptr : doc["ota_md5"].as<const char*>();
@@ -1072,13 +1442,25 @@ static void handleCmd(const char* payload) {
             Serial.println(netOta_getError() ? netOta_getError() : "unknown");
         }
     }
+    if (!doc["valve_open"].isNull()) {
+        actuatorValve_setAuto(false);
+        if (doc["valve_open"].as<bool>()) actuatorValve_open();
+        else actuatorValve_close();
+    }
+    if (!doc["valve_auto"].isNull()) {
+        actuatorValve_setAuto(doc["valve_auto"].as<bool>());
+    }
 }
 
 static const char* DATA_LOG_HEADER =
     "ts,"
     "flow_rate_1,flow_total_1,flow_today_1,"
     "flow_rate_2,flow_total_2,flow_today_2,"
-    "leak";
+    "leak,"
+    "supply_voltage,"
+    "wq_pre_ro_ph,wq_pre_ro_orp,wq_pre_ro_ec,wq_pre_ro_temp,"
+    "wq_post_ro_ph,wq_post_ro_orp,wq_post_ro_ec,wq_post_ro_temp,"
+    "wq_remin_ph,wq_remin_orp,wq_remin_ec,wq_remin_temp";
 
 static void handleDataLog() {
     static unsigned long lastDataLogMs = 0;
@@ -1088,16 +1470,37 @@ static void handleDataLog() {
     }
     lastDataLogMs = now;
 
-    char row[128];
+    char prePh[16], preOrp[16], preEc[16], preTemp[16];
+    char postPh[16], postOrp[16], postEc[16], postTemp[16];
+    char reminPh[16], reminOrp[16], reminEc[16], reminTemp[16];
+
+    char row[360];
     snprintf(row, sizeof(row),
         "%lu,"
         "%.3f,%.3f,%.3f,"
         "%.3f,%.3f,%.3f,"
-        "%d",
+        "%d,"
+        "%.3f,"
+        "%s,%s,%s,%s,"
+        "%s,%s,%s,%s,"
+        "%s,%s,%s,%s",
         (unsigned long)timeRtc_getUnixTime(),
         sensorFlow_getRateLpm(1), sensorFlow_getTotalL(1), sensorFlow_getTodayL(1),
         sensorFlow_getRateLpm(2), sensorFlow_getTotalL(2), sensorFlow_getTodayL(2),
-        sensorLeak_isWet() ? 1 : 0);
+        sensorLeak_isWet() ? 1 : 0,
+        sensorVoltage_getVoltageV(),
+        csvFloatOrBlank(prePh, sizeof(prePh), sensorYieryi_hasPh(YIERYI_ZONE_PRE_RO), sensorYieryi_getPh(YIERYI_ZONE_PRE_RO), 2),
+        csvIntOrBlank(preOrp, sizeof(preOrp), sensorYieryi_hasOrp(YIERYI_ZONE_PRE_RO), sensorYieryi_getOrpMv(YIERYI_ZONE_PRE_RO)),
+        csvFloatOrBlank(preEc, sizeof(preEc), sensorYieryi_hasEc(YIERYI_ZONE_PRE_RO), sensorYieryi_getEcUsCm(YIERYI_ZONE_PRE_RO), 0),
+        csvFloatOrBlank(preTemp, sizeof(preTemp), sensorYieryi_hasTemp(YIERYI_ZONE_PRE_RO), sensorYieryi_getTempC(YIERYI_ZONE_PRE_RO), 1),
+        csvFloatOrBlank(postPh, sizeof(postPh), sensorYieryi_hasPh(YIERYI_ZONE_POST_RO), sensorYieryi_getPh(YIERYI_ZONE_POST_RO), 2),
+        csvIntOrBlank(postOrp, sizeof(postOrp), sensorYieryi_hasOrp(YIERYI_ZONE_POST_RO), sensorYieryi_getOrpMv(YIERYI_ZONE_POST_RO)),
+        csvFloatOrBlank(postEc, sizeof(postEc), sensorYieryi_hasEc(YIERYI_ZONE_POST_RO), sensorYieryi_getEcUsCm(YIERYI_ZONE_POST_RO), 0),
+        csvFloatOrBlank(postTemp, sizeof(postTemp), sensorYieryi_hasTemp(YIERYI_ZONE_POST_RO), sensorYieryi_getTempC(YIERYI_ZONE_POST_RO), 1),
+        csvFloatOrBlank(reminPh, sizeof(reminPh), sensorYieryi_hasPh(YIERYI_ZONE_REMIN), sensorYieryi_getPh(YIERYI_ZONE_REMIN), 2),
+        csvIntOrBlank(reminOrp, sizeof(reminOrp), sensorYieryi_hasOrp(YIERYI_ZONE_REMIN), sensorYieryi_getOrpMv(YIERYI_ZONE_REMIN)),
+        csvFloatOrBlank(reminEc, sizeof(reminEc), sensorYieryi_hasEc(YIERYI_ZONE_REMIN), sensorYieryi_getEcUsCm(YIERYI_ZONE_REMIN), 0),
+        csvFloatOrBlank(reminTemp, sizeof(reminTemp), sensorYieryi_hasTemp(YIERYI_ZONE_REMIN), sensorYieryi_getTempC(YIERYI_ZONE_REMIN), 1));
 
     storeSd_logDataRow(row, DATA_LOG_HEADER);
 }
@@ -1112,7 +1515,8 @@ static void updateM0Led() {
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    Serial.setTxTimeoutMs(0);  // don't block on TX if no USB host connected
+    delay(500);
     Serial.println("[BOOT] TWWP Sensor Node starting");
     Serial.print("[BOOT] firmware ");
     Serial.println(NODE_FIRMWARE_VERSION);
@@ -1129,9 +1533,11 @@ void setup() {
     sensorLeak_begin();
     sensorFlow_begin();
     sessionFlow_begin();
+    sensorVoltage_begin();
+    sensorYieryi_begin();
     sensorPressure_begin();
     sensorTemp_begin();
-    actuatorSolenoid_begin();
+    actuatorValve_begin();
 
     netWifi_begin();
     watchdog_begin();
@@ -1154,9 +1560,11 @@ void loop() {
     sensorLeak_loop();
     sensorFlow_loop();
     sessionFlow_loop();
+    sensorVoltage_loop();
+    sensorYieryi_loop();
     sensorPressure_loop();
     sensorTemp_loop();
-    actuatorSolenoid_loop();
+    actuatorValve_loop();
 
     netWifi_loop();
     netMqtt_loop();

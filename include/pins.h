@@ -2,8 +2,8 @@
 
 // M0 — active
 #define PIN_LEAK_DO      6   // MH-RD leak detector, INPUT_PULLUP, LOW=wet
-#define PIN_I2C_SDA      9   // DS3231 RTC + microSD combo module
-#define PIN_I2C_SCL      3   // DS3231 RTC + microSD combo module (strapping pin, fine as driven clock)
+#define PIN_I2C_SDA      9   // DS3231 RTC + microSD combo module + ADS1115 @ 0x48 (M2.5)
+#define PIN_I2C_SCL      3   // DS3231 RTC + microSD combo module + ADS1115 @ 0x48 (M2.5) — strapping pin, fine as driven clock
 #define PIN_SD_MOSI     11   // SPI2
 #define PIN_SD_SCK      12
 #define PIN_SD_MISO     13
@@ -18,8 +18,8 @@
 #define PIN_PRESSURE     7   // Analog ADC, 0–5V via 2:1 divider → 0–2.5V
 #define PIN_TEMP_1WIRE  10   // DS18B20 OneWire
 
-// M3 — Solenoid (stub)
-#define PIN_SOLENOID     8   // N-MOSFET gate driver
+// M3 — Valve relay
+#define PIN_VALVE        8   // Relay output — active-low (LOW=open). Current load: 12V LED / future ball valve.
 
 // M5 — RS485 water quality sensor (blocked, stub)
 #define PIN_RS485_TX    17   // UART1

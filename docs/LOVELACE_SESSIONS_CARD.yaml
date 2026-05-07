@@ -24,11 +24,23 @@ cards:
         modify: >
           new Date(x.start_ts * 1000).toLocaleDateString('en-AU',
             {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
-      - name: Duration
+      - name: Session
         modify: >
           x.dur_s >= 60
             ? Math.floor(x.dur_s/60) + 'm ' + (x.dur_s % 60) + 's'
             : x.dur_s + 's'
+      - name: Flow
+        modify: >
+          x.flow_dur_s >= 60
+            ? Math.floor(x.flow_dur_s/60) + 'm ' + (x.flow_dur_s % 60) + 's'
+            : x.flow_dur_s + 's'
+      - name: Idle
+        modify: >
+          (x.idle_s || 0) > 0
+            ? ((x.idle_s >= 60)
+                ? Math.floor(x.idle_s/60) + 'm ' + (x.idle_s % 60) + 's'
+                : x.idle_s + 's')
+            : '—'
       - name: Out (L)
         modify: parseFloat(x.vol_out).toFixed(2)
       - name: In (L)

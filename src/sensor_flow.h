@@ -20,7 +20,6 @@ float sensorFlow_getYearL(uint8_t ch);     // L since 1 Jan
 float sensorFlow_getKFactor(uint8_t ch);        // configured nominal K value (pulses/L)
 bool  sensorFlow_setKFactor(uint8_t ch, float k);      // update K in RAM + save to node.json
 float sensorFlow_getAppliedKFactor(uint8_t ch);        // current interpolated K value
-float sensorFlow_getFlowAvgLpm(uint8_t ch);            // smoothed/averaged flow rate (L/min)
 bool  sensorFlow_setKTable(uint8_t ch, const char* json); // set K-table from JSON string, save to node.json
 bool  sensorFlow_setDebounceUs(uint8_t ch, uint32_t us);  // set debounce (100-10000 us), saved to node.json
 uint32_t sensorFlow_getDebounceUs(uint8_t ch);             // get current debounce (us)

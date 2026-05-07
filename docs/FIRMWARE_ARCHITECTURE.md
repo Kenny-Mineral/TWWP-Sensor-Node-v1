@@ -103,7 +103,7 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `sensor_voltage.{h,cpp}` | ADS1115 I²C ADC (0x48) + 100kΩ/33kΩ divider — 12V battery voltage, %, charge state, NVS-persisted v_min/v_max/cal (M2.5) |
 | `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
 | `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
-| `sensor_yieryi.{h,cpp}` | Stub — YiErYi 3788 Modbus RTU via RS485 UART1 (M5, blocked on hardware debug) |
+| `sensor_yieryi.{h,cpp}` | YiErYi 3178/3788 Modbus RTU via RS485 UART1 (M5) — non-blocking state machine, CRC validation, pH/ORP mode command, raw-frame diagnostics |
 | `actuator_valve.{h,cpp}` | Active-low relay driver — auto-opens on sensor 1 flow via `FLOW_ACTIVE_THRESHOLD_LPM`; manual override via MQTT `valve_open`/`valve_auto` cmd keys |
 
 ---

@@ -662,11 +662,6 @@ float sensorFlow_getMonthL(uint8_t ch)   { return ch == 1 ? flowMonth1 : flowMon
 float sensorFlow_getYearL(uint8_t ch)    { return ch == 1 ? flowYear1  : flowYear2; }
 float sensorFlow_getKFactor(uint8_t ch)  { return ch == 1 ? nominalK1  : nominalK2; }
 float sensorFlow_getAppliedKFactor(uint8_t ch) { return ch == 1 ? appliedK1 : appliedK2; }
-float sensorFlow_getFlowAvgLpm(uint8_t ch) {
-    // Return the smoothed flow rate (from the ring buffer average)
-    return ch == 1 ? averageFlowSamples(flowAvgSamples1, flowAvgCount1)
-                   : averageFlowSamples(flowAvgSamples2, flowAvgCount2);
-}
 uint32_t sensorFlow_getDebounceUs(uint8_t ch) { return ch == 1 ? debounceUsCh1 : debounceUsCh2; }
 uint8_t sensorFlow_getFlowAvgWindow() { return flowAvgWindow; }
 

@@ -12,6 +12,7 @@
 #include <stdarg.h>
 
 #include "config.h"
+#include "net_mqtt.h"
 #include "store_sd.h"
 #include "time_rtc.h"
 #include "watchdog.h"
@@ -283,7 +284,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
     WiFiClientSecure client;
     client.setCACert(MQTT_CA_CERT);
     client.setHandshakeTimeout(5);
-    client.setTimeout(2);
+    client.setTimeout(10);
 
     watchdog_feed();
     if (!client.connect(parsed.host.c_str(), parsed.port, 5000)) {
@@ -605,6 +606,15 @@ bool netOta_beginUpdate(const char* url, const char* md5Expected) {
     otaProgressPct = 100;
     setState(OtaState::SUCCESS);
     storeSd_logEvent("[OTA] update applied successfully, rebooting");
+
+    // Best-effort: publish SUCCESS before reboot so MQTT subscribers see it
+    if (netMqtt_isConnected()) {
+        char stateMsg[48];
+        snprintf(stateMsg, sizeof(stateMsg), "{\"ota_state\":%u,\"progress_pct\":100}",
+                 (unsigned)OtaState::SUCCESS);
+        netMqtt_publish(TOPIC_OTA_STATE, stateMsg, false);
+    }
+
     ESP.restart();
     return true;
 }
@@ -626,26 +636,15 @@ const char* netOta_getUrl() {
 }
 
 void netOta_rollback() {
-    const esp_partition_t* rollbackPartition = esp_ota_get_next_update_partition(nullptr);
-    if (rollbackPartition == nullptr) {
-        setError("no rollback partition available");
-        storeSd_logEvent("[OTA] rollback failed: no target partition");
-        return;
-    }
-
     if (!writeBootFlags(OTA_BOOT_ROLLED_BACK, 0UL)) {
         storeSd_logEvent("[OTA] rollback warning: failed to persist rollback marker");
     }
 
-    esp_err_t err = esp_ota_set_boot_partition(rollbackPartition);
-    if (err != ESP_OK) {
-        setError("esp_ota_set_boot_partition failed (%d)", (int)err);
-        storeSd_logEvent("[OTA] rollback failed: set_boot_partition error");
-        return;
-    }
-
     storeSd_logEvent("[OTA] rolling back to previous partition");
-    ESP.restart();
+    esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
+    // Only reached if no valid previous firmware exists (err != ESP_OK)
+    setError("rollback unavailable: no valid previous firmware (%d)", (int)err);
+    storeSd_logEvent("[OTA] rollback failed: no valid previous firmware");
 }
 
 bool netOta_isRollbackPending() {

@@ -3,6 +3,35 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
+### Session 2026-05-08 — M5 YiErYi RS485 water-quality firmware
+
+**Implemented:** Added `sensor_yieryi.{h,cpp}` for YiErYi 3178/3788 water-quality meters on the Waveshare onboard RS485 port. The driver uses UART1 through the board RS485 transceiver (GPIO17 TX, GPIO18 RX, GPIO21 auto DE/RE), not the laptop USB-RS485 adapter.
+
+**Protocol source:** Vendor spreadsheet `Modbus Communication Data Format-V1.01.x....xlsx` in `/home/kenny/Documents/3178 software water monitoring/`. The untested AI-created `read_meter.py` was treated as a hint only.
+
+**Driver behaviour:**
+- 9600 8N1 Modbus RTU, CRC-16 validation.
+- Reads register `0x0000`, count `4`; parses the vendor 16-byte response with `00 08` byte-count field.
+- Writes register `0x0005` to switch pH/ORP mode before reads.
+- Non-blocking state machine; no long blocking waits in loop.
+- Default config enables one meter only: pre-RO at Modbus address `1`. Post-RO and remineralised zones are disabled until unique addresses are confirmed.
+- Staleness watchdog: no CRC-valid read within 60 s publishes water-quality values as `null` and marks `wq_<zone>_online=false`.
+
+**MQTT/HA/SD updates:**
+- Status payload now includes locked water-quality fields: `wq_pre_ro_*`, `wq_post_ro_*`, `wq_remin_*`.
+- Adds diagnostics per zone: `online`, `fail_count`, `last_error`, `raw_hex`, and humidity.
+- HA MQTT discovery publishes 12 water-quality sensors.
+- SD data CSV now includes water-quality columns.
+- USB serial console adds `wq_status` and `wq_poll`.
+
+**Build:** `/home/kenny/.platformio/penv/bin/pio run` succeeded. Final size: RAM 18.7%, flash 22.4%.
+
+**Snapshots saved:**
+- Before M5 changes: `/home/kenny/Documents/twwp-firmware-snapshots/20260508-002612-before-m5-yieryi`
+- Final M5 driver state: `/home/kenny/Documents/twwp-firmware-snapshots/20260508-003411-final-m5-yieryi-driver`
+
+**Not yet verified on hardware:** `pio device list` did not show the Waveshare board, so no upload or live RS485 read was performed.
+
 ### Session 2026-05-04 — USB standalone boot fix + OTA plumbing
 
 **Problem diagnosed:** Device worked only when USB plugged into a computer. On 12V-only power, it rebooted in a boot loop, never staying online long enough to publish to HA. Root cause: `ARDUINO_USB_CDC_ON_BOOT=1` + `ARDUINO_USB_MODE=1` puts Serial into HWCDC mode. Without a USB host connected, every `Serial.println()` in `setup()` blocks waiting for the host — accumulated blocking time caused the hardware watchdog to fire before `setup()` completed.
@@ -84,16 +113,18 @@ Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 **Persistent memory notes added:** server file write approach (write to /tmp → docker cp), HA influxdb YAML config gotcha, Tailscale IP + SSH user confirmed.
 
 ## In progress
-- Firmware: uncommitted changes in `src/`, `include/`, `platformio.ini`, `docs/` from prior sessions (M3 valve driver, M2.5 voltage sensor, session flow improvements). Not related to this session's work.
+- Firmware: ready to commit current combined firmware state, including prior uncommitted M3/M2.5/session changes plus M5 water-quality driver.
 
 ## Next step
-- Create Grafana dashboards via UI: Overview (flow rates, leak, valve, battery), Flow History, Water Quality (3-zone — placeholder until M5), System (WiFi, OTA, uptime).
+- Upload firmware to the Waveshare board, wire one YiErYi meter to the onboard RS485 A/B terminals, then run serial `wq_status` or inspect MQTT status fields for `wq_pre_ro_raw_hex`, `wq_pre_ro_last_error`, and parsed pH/ORP/EC/temp.
+- If multiple meters are installed, assign unique Modbus addresses before enabling `post_ro` and `remin` in `/config/node.json`.
+- Create Grafana dashboards via UI: Overview (flow rates, leak, valve, battery), Flow History, Water Quality, System.
 - Export dashboard JSON and commit to `grafana/provisioning/dashboards/` in the twwp-monitoring repo.
 - M3: confirm final valve type and purchase. Add auto-close safety timeout to `actuator_valve.cpp`.
 - Optional: fix corrupted NVS `k_factor_2` — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
 
 ## Tool last used
-claude-code
+codex
 
 ## Updated
-2026-05-05 22:45
+2026-05-08 00:38

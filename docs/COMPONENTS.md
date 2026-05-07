@@ -195,9 +195,9 @@ Temperature is provided by the YiErYi 3788 RS485 water quality sensor (see below
 | **Part** | YiErYi 3788 (RS485 Modbus) |
 | **Interface** | RS485 half-duplex, UART1 |
 | **Parameters** | pH, ORP, EC, TDS, CF, water temperature, relative humidity |
-| **Baud** | TBD — confirm from Modbus register map |
+| **Baud** | 9600 8N1 |
 | **GPIO** | TX→GPIO17, RX→GPIO18, DE/RE→GPIO21 (auto via `UART_MODE_RS485_HALF_DUPLEX`) |
-| **Status** | Blocked — hardware debug pending |
+| **Status** | Firmware driver implemented; hardware response validation pending |
 | **URL** | TBD |
 
 ---

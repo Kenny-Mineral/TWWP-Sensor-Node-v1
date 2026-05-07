@@ -71,7 +71,7 @@
 | **Flow #2 pulse** | 5 | INPUT | PULLUP | — | 5V | USN-HS06PE/PS, attachInterrupt FALLING — confirmed M1 |
 | **Leak DO** | 6 | INPUT | PULLUP | — | 3V3 | MH-RD comparator out, LOW = wet |
 | **Pressure ADC** | 7 | INPUT | — | ADC1_CH6 | 5V | 0–5V → 2:1 divider → 0–2.5V |
-| **Solenoid gate** | 8 | OUTPUT | — | — | — | → MOSFET gate; 100Ω series, 10kΩ pull-down |
+| **Valve relay output** | 8 | OUTPUT | — | — | 5V (relay VCC) | Active-low relay module IN1. LOW=open. Current load: 12V LED; future: ball valve. |
 | **I²C SDA (DS3231)** | 9 | open-drain | 4.7kΩ on module | — | 3V3 | DS3231 @ 0x68, EEPROM @ 0x57 |
 | **DS18B20 1-Wire** | 10 | bidir | 4.7kΩ to 3V3 | — | 3V3 | 3-wire mode |
 | **SPI MOSI (SD)** | 11 | OUTPUT | — | — | 3V3 | SPI2/FSPI |
@@ -96,8 +96,8 @@ Off-header for future: GPIO33–37, GPIO40–42. (GPIO47 reserved onboard.)
 ## F. Decision log
 
 - [x] D1: GPIO access — full 2×12 header accessible (enclosure open). IO1/IO2 on SH1.0 always accessible.
-- [ ] D2: Image 7 device — solenoid or flow switch? Confirm before wiring GPIO8.
-- [ ] D3: Solenoid driver — discrete N-MOSFET or relay module? Document in `docs/SOLENOID_DRIVER.md`.
+- [x] D2: GPIO8 device — relay module (active-low, 5V coil). Currently driving 12V LED; future ball valve.
+- [x] D3: Valve driver — relay module with optoisolator. GPIO8 → IN1. Jumper JD-VCC+VCC bridged (shared 5V).
 - [ ] D4: Pressure sensor — confirm 0–5V output and PSI range.
 - [ ] D5: Leak detector — DO only (GPIO6) or DO + AO (GPIO6 + GPIO2)?
 - [ ] D6: Power topology — 12V into board VCC terminal → tap 3V3/5V from header?

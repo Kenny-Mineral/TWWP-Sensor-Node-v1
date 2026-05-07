@@ -1,0 +1,441 @@
+#include "sensor_yieryi.h"
+
+#include <ArduinoJson.h>
+#include <HardwareSerial.h>
+#include <driver/uart.h>
+#include <math.h>
+
+#include "config.h"
+#include "pins.h"
+#include "store_sd.h"
+
+static HardwareSerial rs485Serial(1);
+
+static const uint32_t YIERYI_BAUD = 9600;
+static const uint32_t YIERYI_DEFAULT_POLL_MS = 15000UL;
+static const uint32_t YIERYI_MIN_POLL_MS = 5000UL;
+static const uint32_t YIERYI_RESPONSE_TIMEOUT_MS = 700UL;
+static const uint32_t YIERYI_MODE_SETTLE_MS = 250UL;
+static const uint32_t YIERYI_STALE_MS = 60000UL;
+static const uint8_t YIERYI_READ_LEN = 16;
+static const uint8_t YIERYI_WRITE_ACK_LEN = 8;
+
+enum class PollState : uint8_t {
+    Idle,
+    SendMode,
+    WaitModeAck,
+    SettleMode,
+    SendRead,
+    WaitRead
+};
+
+enum class MeterMode : uint8_t {
+    Ph = 0,
+    Orp = 1
+};
+
+struct ZoneState {
+    const char* key;
+    const char* label;
+    uint8_t address;
+    bool enabled;
+    bool readOrp;
+    bool phValid;
+    bool orpValid;
+    bool commonValid;
+    float ph;
+    int16_t orpMv;
+    float ecUsCm;
+    float tempC;
+    uint16_t humidityPct;
+    unsigned long lastSuccessMs;
+    uint16_t failCount;
+    char lastError[40];
+    char rawHex[64];
+};
+
+static ZoneState zones[YIERYI_ZONE_COUNT] = {
+    { "pre_ro",  "Pre-RO",        1, true,  true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "not polled", "" },
+    { "post_ro", "Post-RO",       2, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "disabled",   "" },
+    { "remin",   "Remineralised", 3, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0, 0, "disabled",   "" },
+};
+
+static PollState pollState = PollState::Idle;
+static uint8_t activeZone = 0;
+static MeterMode activeMode = MeterMode::Ph;
+static unsigned long stateDeadlineMs = 0;
+static unsigned long nextPollMs = 0;
+static uint32_t pollIntervalMs = YIERYI_DEFAULT_POLL_MS;
+static uint8_t rxBuf[40];
+static uint8_t rxLen = 0;
+static bool activeJobEndsRound = false;
+
+static bool validZone(uint8_t zone) {
+    return zone < YIERYI_ZONE_COUNT;
+}
+
+static uint16_t crc16Modbus(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+static void appendCrc(uint8_t* frame, size_t lenWithoutCrc) {
+    uint16_t crc = crc16Modbus(frame, lenWithoutCrc);
+    frame[lenWithoutCrc] = crc & 0xFF;
+    frame[lenWithoutCrc + 1] = (crc >> 8) & 0xFF;
+}
+
+static void setError(ZoneState& zone, const char* msg) {
+    strncpy(zone.lastError, msg, sizeof(zone.lastError) - 1);
+    zone.lastError[sizeof(zone.lastError) - 1] = '\0';
+}
+
+static void resetRx() {
+    rxLen = 0;
+    while (rs485Serial.available() > 0) {
+        rs485Serial.read();
+    }
+}
+
+static void readRx() {
+    while (rs485Serial.available() > 0) {
+        uint8_t b = static_cast<uint8_t>(rs485Serial.read());
+        if (rxLen < sizeof(rxBuf)) {
+            rxBuf[rxLen++] = b;
+        } else {
+            memmove(rxBuf, rxBuf + 1, sizeof(rxBuf) - 1);
+            rxBuf[sizeof(rxBuf) - 1] = b;
+        }
+    }
+}
+
+static void rawToHex(const uint8_t* data, size_t len, char* out, size_t outLen) {
+    size_t pos = 0;
+    for (size_t i = 0; i < len && pos + 4 < outLen; ++i) {
+        int written = snprintf(out + pos, outLen - pos, "%s%02X", i ? " " : "", data[i]);
+        if (written <= 0) {
+            break;
+        }
+        pos += static_cast<size_t>(written);
+    }
+    out[pos < outLen ? pos : outLen - 1] = '\0';
+}
+
+static bool findWriteAck(uint8_t address, MeterMode mode) {
+    uint16_t value = (mode == MeterMode::Orp) ? 1 : 0;
+    for (uint8_t start = 0; start + YIERYI_WRITE_ACK_LEN <= rxLen; ++start) {
+        const uint8_t* frame = rxBuf + start;
+        if (frame[0] != address || frame[1] != 0x06 || frame[2] != 0x00 || frame[3] != 0x05) {
+            continue;
+        }
+        uint16_t frameValue = (static_cast<uint16_t>(frame[4]) << 8) | frame[5];
+        uint16_t gotCrc = static_cast<uint16_t>(frame[6]) | (static_cast<uint16_t>(frame[7]) << 8);
+        if (frameValue == value && gotCrc == crc16Modbus(frame, 6)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool parseReadResponse(ZoneState& zone, MeterMode mode) {
+    for (uint8_t start = 0; start + YIERYI_READ_LEN <= rxLen; ++start) {
+        const uint8_t* frame = rxBuf + start;
+        if (frame[0] != zone.address || frame[1] != 0x03 || frame[2] != 0x00 || frame[3] != 0x08) {
+            continue;
+        }
+
+        uint16_t gotCrc = static_cast<uint16_t>(frame[14]) | (static_cast<uint16_t>(frame[15]) << 8);
+        uint16_t calcCrc = crc16Modbus(frame, 14);
+        if (gotCrc != calcCrc) {
+            setError(zone, "read crc mismatch");
+            continue;
+        }
+
+        uint16_t ecRaw = (static_cast<uint16_t>(frame[4]) << 8) | frame[5];
+        uint16_t phOrOrpRaw = (static_cast<uint16_t>(frame[6]) << 8) | frame[7];
+        uint16_t humRaw = (static_cast<uint16_t>(frame[8]) << 8) | frame[9];
+        uint16_t tempRawU = (static_cast<uint16_t>(frame[10]) << 8) | frame[11];
+        int16_t signedPhOrOrp = static_cast<int16_t>(phOrOrpRaw);
+        int16_t signedTempRaw = static_cast<int16_t>(tempRawU);
+
+        zone.ecUsCm = static_cast<float>(ecRaw);
+        zone.tempC = static_cast<float>(signedTempRaw) / 10.0f;
+        zone.humidityPct = humRaw;
+        zone.commonValid = true;
+        if (mode == MeterMode::Orp) {
+            zone.orpMv = signedPhOrOrp;
+            zone.orpValid = true;
+        } else {
+            zone.ph = static_cast<float>(phOrOrpRaw) / 100.0f;
+            zone.phValid = true;
+        }
+        zone.lastSuccessMs = millis();
+        setError(zone, "ok");
+        rawToHex(frame, YIERYI_READ_LEN, zone.rawHex, sizeof(zone.rawHex));
+        return true;
+    }
+    return false;
+}
+
+static void sendModeCommand(ZoneState& zone, MeterMode mode) {
+    uint8_t frame[8] = { zone.address, 0x06, 0x00, 0x05, 0x00, static_cast<uint8_t>(mode == MeterMode::Orp ? 0x01 : 0x00), 0x00, 0x00 };
+    appendCrc(frame, 6);
+    resetRx();
+    rs485Serial.write(frame, sizeof(frame));
+    rs485Serial.flush();
+}
+
+static void sendReadCommand(ZoneState& zone) {
+    uint8_t frame[8] = { zone.address, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00 };
+    appendCrc(frame, 6);
+    resetRx();
+    rs485Serial.write(frame, sizeof(frame));
+    rs485Serial.flush();
+}
+
+static bool chooseNextJob(uint8_t& zoneOut, MeterMode& modeOut) {
+    static uint8_t nextZone = 0;
+    static bool nextOrp = false;
+    static uint8_t jobsRemainingInRound = 0;
+
+    if (jobsRemainingInRound == 0) {
+        for (uint8_t i = 0; i < YIERYI_ZONE_COUNT; ++i) {
+            if (zones[i].enabled) {
+                jobsRemainingInRound += zones[i].readOrp ? 2 : 1;
+            }
+        }
+        if (jobsRemainingInRound == 0) {
+            activeJobEndsRound = true;
+            return false;
+        }
+    }
+
+    for (uint8_t tries = 0; tries < YIERYI_ZONE_COUNT * 2; ++tries) {
+        ZoneState& zone = zones[nextZone];
+        uint8_t candidateZone = nextZone;
+        bool candidateOrp = nextOrp;
+
+        if (zone.enabled) {
+            if (!candidateOrp) {
+                nextOrp = zone.readOrp;
+                --jobsRemainingInRound;
+                activeJobEndsRound = (jobsRemainingInRound == 0);
+                zoneOut = candidateZone;
+                modeOut = MeterMode::Ph;
+                return true;
+            }
+            nextOrp = false;
+            nextZone = (nextZone + 1) % YIERYI_ZONE_COUNT;
+            --jobsRemainingInRound;
+            activeJobEndsRound = (jobsRemainingInRound == 0);
+            zoneOut = candidateZone;
+            modeOut = MeterMode::Orp;
+            return true;
+        }
+
+        nextOrp = false;
+        nextZone = (nextZone + 1) % YIERYI_ZONE_COUNT;
+    }
+    return false;
+}
+
+static void loadConfig() {
+    JsonDocument doc;
+    if (!storeSd_readJsonFile(SD_CONFIG_PATH, doc)) {
+        return;
+    }
+
+    JsonVariantConst wq = doc["water_quality"];
+    if (wq.isNull()) {
+        return;
+    }
+
+    uint32_t configuredPoll = wq["poll_interval_ms"] | pollIntervalMs;
+    pollIntervalMs = max(YIERYI_MIN_POLL_MS, configuredPoll);
+    bool defaultReadOrp = wq["read_orp"] | true;
+
+    for (uint8_t i = 0; i < YIERYI_ZONE_COUNT; ++i) {
+        JsonVariantConst zoneCfg = wq[zones[i].key];
+        if (zoneCfg.isNull()) {
+            zones[i].readOrp = defaultReadOrp;
+            continue;
+        }
+        zones[i].enabled = zoneCfg["enabled"] | zones[i].enabled;
+        zones[i].address = zoneCfg["address"] | zones[i].address;
+        zones[i].readOrp = zoneCfg["read_orp"] | defaultReadOrp;
+        if (!zones[i].enabled) {
+            setError(zones[i], "disabled");
+        }
+    }
+}
+
+bool sensorYieryi_begin() {
+    loadConfig();
+    rs485Serial.begin(YIERYI_BAUD, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
+    rs485Serial.setPins(-1, -1, -1, PIN_RS485_EN);
+    rs485Serial.setMode(UART_MODE_RS485_HALF_DUPLEX);
+    nextPollMs = millis() + 1000UL;
+    Serial.println("[YIERYI] RS485 Modbus init 9600 8N1");
+    return true;
+}
+
+void sensorYieryi_forcePoll() {
+    nextPollMs = millis();
+}
+
+void sensorYieryi_loop() {
+    unsigned long now = millis();
+    readRx();
+
+    switch (pollState) {
+        case PollState::Idle: {
+            if ((long)(now - nextPollMs) < 0) {
+                return;
+            }
+            if (!chooseNextJob(activeZone, activeMode)) {
+                nextPollMs = now + pollIntervalMs;
+                return;
+            }
+            pollState = PollState::SendMode;
+            break;
+        }
+
+        case PollState::SendMode:
+            sendModeCommand(zones[activeZone], activeMode);
+            stateDeadlineMs = now + YIERYI_RESPONSE_TIMEOUT_MS;
+            pollState = PollState::WaitModeAck;
+            break;
+
+        case PollState::WaitModeAck:
+            if (findWriteAck(zones[activeZone].address, activeMode) || (long)(now - stateDeadlineMs) >= 0) {
+                if ((long)(now - stateDeadlineMs) >= 0) {
+                    setError(zones[activeZone], "mode ack timeout");
+                }
+                stateDeadlineMs = now + YIERYI_MODE_SETTLE_MS;
+                pollState = PollState::SettleMode;
+            }
+            break;
+
+        case PollState::SettleMode:
+            if ((long)(now - stateDeadlineMs) >= 0) {
+                pollState = PollState::SendRead;
+            }
+            break;
+
+        case PollState::SendRead:
+            sendReadCommand(zones[activeZone]);
+            stateDeadlineMs = now + YIERYI_RESPONSE_TIMEOUT_MS;
+            pollState = PollState::WaitRead;
+            break;
+
+        case PollState::WaitRead:
+            if (parseReadResponse(zones[activeZone], activeMode)) {
+                pollState = PollState::Idle;
+                nextPollMs = now + (activeJobEndsRound ? pollIntervalMs : 20UL);
+            } else if ((long)(now - stateDeadlineMs) >= 0) {
+                ++zones[activeZone].failCount;
+                if (strcmp(zones[activeZone].lastError, "read crc mismatch") != 0) {
+                    setError(zones[activeZone], "read timeout");
+                }
+                pollState = PollState::Idle;
+                nextPollMs = now + (activeJobEndsRound ? pollIntervalMs : 20UL);
+            }
+            break;
+    }
+}
+
+bool sensorYieryi_isEnabled(uint8_t zone) {
+    return validZone(zone) && zones[zone].enabled;
+}
+
+bool sensorYieryi_isOnline(uint8_t zone) {
+    if (!validZone(zone) || !zones[zone].enabled || zones[zone].lastSuccessMs == 0) {
+        return false;
+    }
+    return millis() - zones[zone].lastSuccessMs <= YIERYI_STALE_MS;
+}
+
+bool sensorYieryi_hasPh(uint8_t zone) {
+    return validZone(zone) && zones[zone].phValid && sensorYieryi_isOnline(zone);
+}
+
+bool sensorYieryi_hasOrp(uint8_t zone) {
+    return validZone(zone) && zones[zone].orpValid && sensorYieryi_isOnline(zone);
+}
+
+bool sensorYieryi_hasEc(uint8_t zone) {
+    return validZone(zone) && zones[zone].commonValid && sensorYieryi_isOnline(zone);
+}
+
+bool sensorYieryi_hasTemp(uint8_t zone) {
+    return validZone(zone) && zones[zone].commonValid && sensorYieryi_isOnline(zone);
+}
+
+float sensorYieryi_getPh(uint8_t zone) {
+    return validZone(zone) ? zones[zone].ph : NAN;
+}
+
+int16_t sensorYieryi_getOrpMv(uint8_t zone) {
+    return validZone(zone) ? zones[zone].orpMv : 0;
+}
+
+float sensorYieryi_getEcUsCm(uint8_t zone) {
+    return validZone(zone) ? zones[zone].ecUsCm : NAN;
+}
+
+float sensorYieryi_getTempC(uint8_t zone) {
+    return validZone(zone) ? zones[zone].tempC : NAN;
+}
+
+uint16_t sensorYieryi_getHumidityPct(uint8_t zone) {
+    return validZone(zone) ? zones[zone].humidityPct : 0;
+}
+
+uint32_t sensorYieryi_getLastSuccessAgeMs(uint8_t zone) {
+    if (!validZone(zone) || zones[zone].lastSuccessMs == 0) {
+        return UINT32_MAX;
+    }
+    return millis() - zones[zone].lastSuccessMs;
+}
+
+uint16_t sensorYieryi_getFailCount(uint8_t zone) {
+    return validZone(zone) ? zones[zone].failCount : 0;
+}
+
+const char* sensorYieryi_getLastError(uint8_t zone) {
+    return validZone(zone) ? zones[zone].lastError : "invalid zone";
+}
+
+const char* sensorYieryi_getRawHex(uint8_t zone) {
+    return validZone(zone) ? zones[zone].rawHex : "";
+}
+
+void sensorYieryi_printStatus(Print& out) {
+    out.println("[YIERYI] status");
+    for (uint8_t i = 0; i < YIERYI_ZONE_COUNT; ++i) {
+        ZoneState& z = zones[i];
+        out.printf("  %s addr=%u enabled=%u online=%u fail=%u err=%s raw=%s\n",
+                   z.label, z.address, z.enabled ? 1 : 0, sensorYieryi_isOnline(i) ? 1 : 0,
+                   z.failCount, z.lastError, z.rawHex);
+        out.printf("    ph=%s%.2f orp=%s%d ec=%s%.0f temp=%s%.1f hum=%u\n",
+                   sensorYieryi_hasPh(i) ? "" : "stale/",
+                   z.ph,
+                   sensorYieryi_hasOrp(i) ? "" : "stale/",
+                   z.orpMv,
+                   sensorYieryi_hasEc(i) ? "" : "stale/",
+                   z.ecUsCm,
+                   sensorYieryi_hasTemp(i) ? "" : "stale/",
+                   z.tempC,
+                   z.humidityPct);
+    }
+}

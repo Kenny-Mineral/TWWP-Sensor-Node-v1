@@ -864,17 +864,42 @@ All HA entity state changes are written (no entity filter active — all entitie
 - WiFi RSSI
 - Session data (last volume, duration)
 
-When M5 firmware goes live, the 12 water quality entities (`wq_pre_ro_*`, `wq_post_ro_*`, `wq_remin_*`) will start flowing automatically — HA will write them as soon as MQTT discovery publishes.
+The M5 firmware publishes 12 water quality entities (`wq_pre_ro_*`, `wq_post_ro_*`, `wq_remin_*`). HA writes them to InfluxDB as soon as MQTT discovery publishes and a meter returns valid data.
 
-### Water quality zones (M5 — pending hardware)
+### Water quality zones (M5)
 
-Three RS485-3177 sensors: pre-RO filter, post-RO filter, remineralised. Entity naming locked in:
+Three RS485-3177/3178 sensors: pre-RO filter, post-RO filter, remineralised. Entity naming locked in:
 
 ```
 sensor.wh_001_wq_pre_ro_ph / orp / ec / temp
 sensor.wh_001_wq_post_ro_ph / orp / ec / temp
 sensor.wh_001_wq_remin_ph / orp / ec / temp
 ```
+
+Default firmware behaviour enables one meter only: pre-RO at Modbus address `1`, 9600 8N1, using the Waveshare onboard RS485 port on GPIO17/18/21. Additional zones stay disabled until their Modbus addresses are confirmed.
+
+Optional `/config/node.json` override:
+
+```json
+{
+  "water_quality": {
+    "poll_interval_ms": 15000,
+    "read_orp": true,
+    "pre_ro":  { "enabled": true,  "address": 1, "read_orp": true },
+    "post_ro": { "enabled": false, "address": 2, "read_orp": true },
+    "remin":   { "enabled": false, "address": 3, "read_orp": true }
+  }
+}
+```
+
+USB serial commands:
+
+```text
+wq_status   # print enabled zones, online state, last error, raw frame, parsed values
+wq_poll     # request an immediate poll cycle
+```
+
+If a zone has no CRC-valid response for 60 seconds, its water quality status fields are published as `null` and `wq_<zone>_online` becomes `false`. Use `wq_<zone>_raw_hex`, `wq_<zone>_last_error`, and `wq_status` when checking wiring, A/B polarity, power, or Modbus address.
 
 ### Verify InfluxDB is receiving data
 

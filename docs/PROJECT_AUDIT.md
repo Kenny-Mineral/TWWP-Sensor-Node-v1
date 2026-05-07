@@ -62,7 +62,7 @@ The node publishes to a self-hosted Mosquitto MQTT broker on Hetzner (TLS port 8
 | `src/session_flow.{h,cpp}` | Tap session state machine (IDLE/ACTIVE/ENDING), configurable idle timeout + flow threshold (NVS), 10-session ring buffer, SD persistence, retained MQTT publish | Modified, uncommitted |
 | `src/sensor_pressure.{h,cpp}` | Stub (M2) |  |
 | `src/sensor_temp.{h,cpp}` | Stub (M5) |  |
-| `src/sensor_yieryi.{h,cpp}` | Stub (M5) |  |
+| `src/sensor_yieryi.{h,cpp}` | Implemented (M5) | Hardware response validation pending |
 | `src/actuator_solenoid.{h,cpp}` | Stub (M3) |  |
 | `include/config.h` | All compile-time constants: topic strings, SD paths, timeouts, thresholds, buffer sizes | Modified, uncommitted |
 | `include/pins.h` | GPIO assignments only — no logic | Modified, uncommitted |
