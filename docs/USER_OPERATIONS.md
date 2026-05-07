@@ -94,7 +94,7 @@ Two OTA paths are available:
 | Path | Use case | Requirement |
 |---|---|---|
 | ArduinoOTA | LAN development upload — no USB cable needed | Node powered, on same WiFi as laptop |
-| MQTT-driven OTA | Remote update from anywhere | Node online, firmware binary on HTTPS server |
+| MQTT-driven OTA | Remote update from anywhere | Node online, firmware binary on reachable HTTP(S) server |
 
 ---
 
@@ -109,7 +109,9 @@ The node advertises itself via mDNS as `twwp-wh_001.local` once WiFi connects.
 3. Click the **Upload** button (→). PlatformIO will build and push over WiFi.
 4. Switch the environment back to `waveshare-esp32-s3-rs485-can` for normal USB work.
 
-The `[env:ota]` block in `platformio.ini` targets `twwp-wh_001.local`. If the NODE_ID changes, update `upload_port` in that block to match.
+The `[env:ota]` block in `platformio.ini` targets the node's current LAN IP. If the NODE_ID or DHCP lease changes, update `upload_port` in that block.
+
+ArduinoOTA is a local-network workflow only. It relies on `espota` over port `3232` and is not the off-site update path; Tailscale is useful for reaching Home Assistant or your tooling remotely, but the node itself still needs the firmware file to be reachable from its own network.
 
 ArduinoOTA has no password set — LAN access only, not exposed to the internet.
 
@@ -117,7 +119,7 @@ ArduinoOTA has no password set — LAN access only, not exposed to the internet.
 
 ### Method 2 — MQTT-driven OTA (remote)
 
-Use this when the node is deployed and USB access is not practical.
+Use this when the node is deployed and USB access is not practical. This is the correct off-site update path.
 
 **Step 1 — Build the binary:**
 
@@ -143,6 +145,14 @@ scp .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin \
   user@twwp-iot.duckdns.org:/var/www/html/firmware/twwp-vX.X.X.bin
 ```
 
+The firmware host can be:
+
+- A normal public HTTPS site
+- A private HTTP server reachable from the node's network
+- A different HTTPS host than the MQTT broker, as long as its CA is added to `OTA_CA_CERT` in `include/secrets.h`
+
+The OTA client follows up to 3 HTTP redirects. Use a direct static file URL when possible.
+
 **Step 4 — Trigger the update via MQTT:**
 
 ```bash
@@ -155,6 +165,13 @@ mosquitto_pub \
 ```
 
 `ota_md5` is optional but recommended — the node will reject the image if the hash doesn't match.
+
+Examples:
+
+```text
+https://twwp-iot.duckdns.org/firmware/twwp-v0.1.1.bin
+http://192.168.20.10:8080/firmware/twwp-v0.1.1.bin
+```
 
 **Monitor progress:**
 

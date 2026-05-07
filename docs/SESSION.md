@@ -3,6 +3,49 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
+### Session 2026-05-08 (continued) — OTA remote-path hardening handoff
+
+**Scope:** Clarified that ArduinoOTA is still a LAN-only convenience path. The real off-site update path is MQTT-triggered OTA where the node downloads a firmware binary from a URL reachable from its own network.
+
+**Problem diagnosed:**
+- ArduinoOTA over `espota` is not a complete off-site strategy. Tailscale may help the operator reach Home Assistant or MQTT tooling remotely, but it does not make the ESP32 itself reachable for direct PlatformIO OTA in the general case.
+- The existing MQTT-driven OTA implementation was too strict for real deployments:
+  - it only accepted `https://...` URLs
+  - it assumed the firmware host used the same CA as `MQTT_HOST`
+  - it failed on normal HTTP redirect responses instead of following them
+
+**Changes made:**
+1. **`src/net_ota.cpp`**
+   - Added optional `OTA_CA_CERT` fallback logic:
+     ```cpp
+     #ifndef OTA_CA_CERT
+     #define OTA_CA_CERT MQTT_CA_CERT
+     #endif
+     ```
+   - OTA URL parser now accepts both `http://` and `https://`.
+   - Added redirect handling (301/302/303/307/308), following up to 3 redirects.
+   - HTTPS firmware downloads now validate against `OTA_CA_CERT` instead of hardwiring `MQTT_CA_CERT`.
+   - Result: remote OTA now works with more realistic hosting layouts:
+     - public HTTPS file host on a different CA
+     - redirected static-file URLs
+     - private HTTP host reachable from the device LAN
+
+2. **`include/secrets.h.sample`**
+   - Documented optional `OTA_CA_CERT` for firmware hosts that do not chain to the same CA as the MQTT broker.
+
+3. **`docs/USER_OPERATIONS.md`**
+   - Updated OTA instructions to reflect the actual supported off-site workflow.
+   - Explicitly documented that ArduinoOTA is LAN-only.
+   - Added accepted remote host patterns: public HTTPS, private HTTP, or separate HTTPS host with `OTA_CA_CERT`.
+
+**Build verification:**
+- `/home/kenny/.platformio/penv/bin/pio run` succeeded after the OTA changes.
+- Final size remained healthy: RAM 18.7%, Flash 22.4%.
+
+**Not yet verified on hardware:**
+- No live OTA run was executed after this change.
+- Need to test one MQTT OTA update against a real hosted `.bin` URL and capture `ota_state` / `ota_error` if it still fails.
+
 ### Session 2026-05-08 (continued) — M5 first hardware test, OTA fix, TDS + calibration dates
 
 **OTA bug fix (net_ota.cpp — two bugs, both fixed, USB-flashed):**
@@ -159,9 +202,14 @@ Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 **Persistent memory notes added:** server file write approach (write to /tmp → docker cp), HA influxdb YAML config gotcha, Tailscale IP + SSH user confirmed.
 
 ## In progress
-- All M5 firmware changes committed (OTA fix, ORP encoding fix, TDS, calibration dates).
+- Unrelated user change present:
+  - `src/sensor_yieryi.cpp`
 
 ## Next step
+- Perform one real MQTT-driven OTA validation using a hosted `firmware.bin` URL and confirm:
+  - success path publishes `ota_state` progress and reboots cleanly
+  - failure path gives a useful `ota_error`
+- If the firmware file host uses a different certificate chain than the broker, add `OTA_CA_CERT` to `include/secrets.h` before the live test.
 - Record first calibration dates via MQTT once meter is physically calibrated:
   ```json
   {"set_wq_pre_ro_ph_cal_date": "2026-05-08", "set_wq_pre_ro_orp_cal_date": "2026-05-08", "set_wq_pre_ro_ec_cal_date": "2026-05-08"}
@@ -174,7 +222,7 @@ Dashboard YAML source of truth: `docs/LOVELACE_DASHBOARD.yaml` (committed).
 - Optional: fix corrupted NVS `k_factor_2` — send `{"k_factor_2": 20700}` via MQTT on `twwp/wh_001/cmd`.
 
 ## Tool last used
-claude-code
+codex
 
 ## Updated
-2026-05-08 (session 2)
+2026-05-08 (session 3)

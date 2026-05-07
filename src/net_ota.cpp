@@ -19,6 +19,10 @@
 
 namespace {
 
+#ifndef OTA_CA_CERT
+#define OTA_CA_CERT MQTT_CA_CERT
+#endif
+
 static const char* OTA_NVS_NAMESPACE = "ota";
 static const char* OTA_KEY_BOOT_PENDING = "boot_pend";
 static const char* OTA_KEY_BOOT_TS = "boot_ts";
@@ -32,6 +36,7 @@ static const size_t OTA_URL_MAX_LEN = 384;
 static const size_t OTA_ERROR_MAX_LEN = 160;
 static const size_t OTA_MD5_HEX_LEN = 32;
 static const size_t OTA_DOWNLOAD_CHUNK_SIZE = 1024;
+static const uint8_t OTA_MAX_REDIRECTS = 3;
 
 static OtaState otaState = OtaState::IDLE;
 static uint8_t otaProgressPct = 0;
@@ -42,7 +47,13 @@ static bool otaRollbackTriggered = false;
 static bool otaAwaitingValidation = false;
 static unsigned long otaValidationStartMs = 0;
 
+enum class OtaUrlScheme : uint8_t {
+    HTTP = 0,
+    HTTPS
+};
+
 struct ParsedUrl {
+    OtaUrlScheme scheme;
     String host;
     uint16_t port;
     String path;
@@ -184,17 +195,27 @@ static void digestToHex(const uint8_t* digest, char* outHex, size_t outSize) {
     outHex[OTA_MD5_HEX_LEN] = '\0';
 }
 
-static bool parseHttpsUrl(const char* url, ParsedUrl& parsed) {
+static bool isRedirectStatus(int statusCode) {
+    return statusCode == 301 || statusCode == 302 || statusCode == 303 ||
+           statusCode == 307 || statusCode == 308;
+}
+
+static bool parseUrl(const char* url, ParsedUrl& parsed) {
     if (url == nullptr) {
         return false;
     }
 
     String fullUrl(url);
-    if (!fullUrl.startsWith("https://")) {
+    String remainder;
+    if (fullUrl.startsWith("https://")) {
+        parsed.scheme = OtaUrlScheme::HTTPS;
+        remainder = fullUrl.substring(8);
+    } else if (fullUrl.startsWith("http://")) {
+        parsed.scheme = OtaUrlScheme::HTTP;
+        remainder = fullUrl.substring(7);
+    } else {
         return false;
     }
-
-    String remainder = fullUrl.substring(8);
     int slashPos = remainder.indexOf('/');
     String hostPort = (slashPos >= 0) ? remainder.substring(0, slashPos) : remainder;
     parsed.path = (slashPos >= 0) ? remainder.substring(slashPos) : String("/");
@@ -213,15 +234,52 @@ static bool parseHttpsUrl(const char* url, ParsedUrl& parsed) {
         parsed.port = static_cast<uint16_t>(port);
     } else {
         parsed.host = hostPort;
-        parsed.port = 443;
+        parsed.port = (parsed.scheme == OtaUrlScheme::HTTPS) ? 443 : 80;
     }
 
     return !parsed.host.isEmpty() && !parsed.path.isEmpty();
 }
 
-static bool readHttpHeaders(WiFiClientSecure& client, int& statusCode, int32_t& contentLength) {
+static bool buildRedirectUrl(const ParsedUrl& current, const String& location, String& outUrl) {
+    if (location.isEmpty()) {
+        return false;
+    }
+
+    if (location.startsWith("https://") || location.startsWith("http://")) {
+        outUrl = location;
+        return true;
+    }
+
+    String scheme = (current.scheme == OtaUrlScheme::HTTPS) ? "https://" : "http://";
+    String authority = current.host;
+    bool nonDefaultPort = (current.scheme == OtaUrlScheme::HTTPS && current.port != 443) ||
+                          (current.scheme == OtaUrlScheme::HTTP && current.port != 80);
+    if (nonDefaultPort) {
+        authority += ":";
+        authority += String(current.port);
+    }
+
+    if (location[0] == '/') {
+        outUrl = scheme + authority + location;
+        return true;
+    }
+
+    String basePath = current.path;
+    int lastSlash = basePath.lastIndexOf('/');
+    if (lastSlash < 0) {
+        basePath = "/";
+    } else {
+        basePath = basePath.substring(0, lastSlash + 1);
+    }
+
+    outUrl = scheme + authority + basePath + location;
+    return true;
+}
+
+static bool readHttpHeaders(Client& client, int& statusCode, int32_t& contentLength, String& location) {
     statusCode = -1;
     contentLength = -1;
+    location = "";
     unsigned long startedMs = millis();
 
     while (true) {
@@ -258,7 +316,17 @@ static bool readHttpHeaders(WiFiClientSecure& client, int& statusCode, int32_t& 
             }
         } else if (strncmp(line, "Content-Length:", 15) == 0) {
             contentLength = static_cast<int32_t>(atol(line + 15));
+        } else if (strncasecmp(line, "Location:", 9) == 0) {
+            const char* value = line + 9;
+            while (*value == ' ' || *value == '\t') {
+                ++value;
+            }
+            location = value;
         }
+    }
+
+    if (isRedirectStatus(statusCode)) {
+        return true;
     }
 
     if (statusCode != 200) {
@@ -276,40 +344,93 @@ static bool readHttpHeaders(WiFiClientSecure& client, int& statusCode, int32_t& 
 
 static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
     ParsedUrl parsed;
-    if (!parseHttpsUrl(url, parsed)) {
-        setError("OTA URL must be https://host/path");
+    String currentUrl(url);
+    if (!parseUrl(currentUrl.c_str(), parsed)) {
+        setError("OTA URL must be http(s)://host/path");
         return false;
     }
 
-    WiFiClientSecure client;
-    client.setCACert(MQTT_CA_CERT);
-    client.setHandshakeTimeout(5);
-    client.setTimeout(10);
-
-    watchdog_feed();
-    if (!client.connect(parsed.host.c_str(), parsed.port, 5000)) {
-        char tlsMsg[96] = {0};
-        client.lastError(tlsMsg, sizeof(tlsMsg));
-        setError("TLS connect failed: %s", tlsMsg[0] ? tlsMsg : "unknown");
-        return false;
-    }
-
-    String request = String("GET ") + parsed.path + " HTTP/1.1\r\n" +
-                     "Host: " + parsed.host + "\r\n" +
-                     "User-Agent: TWWP-OTA/1.0\r\n" +
-                     "Connection: close\r\n\r\n";
-    client.print(request);
-
-    int statusCode = -1;
+    WiFiClientSecure secureClient;
+    WiFiClient plainClient;
+    Client* client = nullptr;
     int32_t contentLength = -1;
-    if (!readHttpHeaders(client, statusCode, contentLength)) {
-        client.stop();
-        return false;
+
+    for (uint8_t redirectCount = 0; redirectCount <= OTA_MAX_REDIRECTS; ++redirectCount) {
+        if (!parseUrl(currentUrl.c_str(), parsed)) {
+            setError("invalid OTA URL after redirect");
+            return false;
+        }
+
+        if (parsed.scheme == OtaUrlScheme::HTTPS) {
+            secureClient.stop();
+            secureClient.setCACert(OTA_CA_CERT);
+            secureClient.setHandshakeTimeout(5);
+            secureClient.setTimeout(10);
+            client = &secureClient;
+        } else {
+            plainClient.stop();
+            plainClient.setTimeout(10);
+            client = &plainClient;
+        }
+
+        watchdog_feed();
+        bool connected = false;
+        if (parsed.scheme == OtaUrlScheme::HTTPS) {
+            connected = secureClient.connect(parsed.host.c_str(), parsed.port, 5000);
+        } else {
+            connected = plainClient.connect(parsed.host.c_str(), parsed.port);
+        }
+        if (!connected) {
+            if (parsed.scheme == OtaUrlScheme::HTTPS) {
+                char tlsMsg[96] = {0};
+                secureClient.lastError(tlsMsg, sizeof(tlsMsg));
+                setError("TLS connect failed: %s", tlsMsg[0] ? tlsMsg : "unknown");
+            } else {
+                setError("HTTP connect failed");
+            }
+            return false;
+        }
+
+        String hostHeader = parsed.host;
+        bool nonDefaultPort = (parsed.scheme == OtaUrlScheme::HTTPS && parsed.port != 443) ||
+                              (parsed.scheme == OtaUrlScheme::HTTP && parsed.port != 80);
+        if (nonDefaultPort) {
+            hostHeader += ":";
+            hostHeader += String(parsed.port);
+        }
+
+        String request = String("GET ") + parsed.path + " HTTP/1.1\r\n" +
+                         "Host: " + hostHeader + "\r\n" +
+                         "User-Agent: TWWP-OTA/1.0\r\n" +
+                         "Connection: close\r\n\r\n";
+        client->print(request);
+
+        int statusCode = -1;
+        String redirectLocation;
+        if (!readHttpHeaders(*client, statusCode, contentLength, redirectLocation)) {
+            client->stop();
+            return false;
+        }
+
+        if (!isRedirectStatus(statusCode)) {
+            break;
+        }
+
+        client->stop();
+        if (redirectCount == OTA_MAX_REDIRECTS) {
+            setError("too many HTTP redirects");
+            return false;
+        }
+
+        if (!buildRedirectUrl(parsed, redirectLocation, currentUrl)) {
+            setError("redirect missing Location header");
+            return false;
+        }
     }
 
     if (!Update.begin(static_cast<size_t>(contentLength))) {
         setError("Update.begin failed (%u)", (unsigned)Update.getError());
-        client.stop();
+        client->stop();
         return false;
     }
 
@@ -317,7 +438,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (!Update.setMD5(md5Expected)) {
             setError("Update.setMD5 rejected expected hash");
             Update.abort();
-            client.stop();
+            client->stop();
             return false;
         }
     }
@@ -329,7 +450,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (mbedtls_md5_starts(&md5Context) != 0) {
             setError("failed to start MD5");
             Update.abort();
-            client.stop();
+            client->stop();
             mbedtls_md5_free(&md5Context);
             return false;
         }
@@ -346,7 +467,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (WiFi.status() != WL_CONNECTED) {
             setError("WiFi disconnected during OTA");
             Update.abort();
-            client.stop();
+            client->stop();
             if (md5Started) {
                 mbedtls_md5_free(&md5Context);
             }
@@ -356,21 +477,21 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (millis() - lastDataMs > OTA_HTTP_TIMEOUT_MS) {
             setError("OTA download timeout");
             Update.abort();
-            client.stop();
+            client->stop();
             if (md5Started) {
                 mbedtls_md5_free(&md5Context);
             }
             return false;
         }
 
-        int availableBytes = client.available();
+        int availableBytes = client->available();
         if (availableBytes <= 0) {
-            if (!client.connected() && bytesWritten < static_cast<size_t>(contentLength)) {
+            if (!client->connected() && bytesWritten < static_cast<size_t>(contentLength)) {
                 setError("HTTP body ended early (%u/%u bytes)",
                          (unsigned)bytesWritten,
                          (unsigned)contentLength);
                 Update.abort();
-                client.stop();
+                client->stop();
                 if (md5Started) {
                     mbedtls_md5_free(&md5Context);
                 }
@@ -389,7 +510,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
             toRead = static_cast<size_t>(availableBytes);
         }
 
-        int bytesRead = client.readBytes(reinterpret_cast<char*>(buffer), toRead);
+        int bytesRead = client->readBytes(reinterpret_cast<char*>(buffer), toRead);
         if (bytesRead <= 0) {
             yield();
             continue;
@@ -400,7 +521,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (md5Started && mbedtls_md5_update(&md5Context, buffer, bytesRead) != 0) {
             setError("failed to update MD5");
             Update.abort();
-            client.stop();
+            client->stop();
             mbedtls_md5_free(&md5Context);
             return false;
         }
@@ -409,7 +530,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         if (writtenNow != static_cast<size_t>(bytesRead)) {
             setError("Update.write failed (%u)", (unsigned)Update.getError());
             Update.abort();
-            client.stop();
+            client->stop();
             if (md5Started) {
                 mbedtls_md5_free(&md5Context);
             }
@@ -420,7 +541,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
         otaProgressPct = static_cast<uint8_t>((bytesWritten * 100U) / static_cast<size_t>(contentLength));
     }
 
-    client.stop();
+    client->stop();
     setState(OtaState::VERIFYING);
 
     if (md5Started) {
