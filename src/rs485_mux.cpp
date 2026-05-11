@@ -40,6 +40,42 @@ static uint8_t       lineLen     = 0;
 static bool          lineStarted = false;
 static unsigned long lineStartMs = 0;
 
+// ── Per-byte routing logic ────────────────────────────────────────────────────
+// Extracted so it can be called both from rs485Mux_loop() (UART path)
+// and from rs485Mux_inject() (test injection path under UNIT_TEST).
+
+static void processByte(uint8_t b) {
+    if (lineStarted) {
+        if (lineLen < (uint8_t)(sizeof(lineBuf) - 1)) {
+            lineBuf[lineLen++] = (char)b;
+        }
+
+        bool eol     = (b == '\n');
+        bool full    = (lineLen >= (uint8_t)(sizeof(lineBuf) - 1));
+        bool timeout = ((millis() - lineStartMs) > 200UL);
+
+        if (eol || full || timeout) {
+            lineBuf[lineLen] = '\0';
+            if (eol && lineLen >= 5 &&
+                lineBuf[0] == '$' && lineBuf[1] == 'W' &&
+                lineBuf[2] == 'M' && lineBuf[3] == ',') {
+                sensorTdsMeter_onFrame(lineBuf);
+            }
+            lineStarted = false;
+            lineLen     = 0;
+        }
+    } else {
+        if (b == (uint8_t)'$') {
+            lineStarted = true;
+            lineStartMs = millis();
+            lineBuf[0]  = '$';
+            lineLen     = 1;
+        } else {
+            mbPush(b);
+        }
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 void rs485Mux_begin() {
@@ -51,37 +87,7 @@ void rs485Mux_begin() {
 
 void rs485Mux_loop() {
     while (rs485Serial.available() > 0) {
-        uint8_t b = (uint8_t)rs485Serial.read();
-
-        if (lineStarted) {
-            if (lineLen < (uint8_t)(sizeof(lineBuf) - 1)) {
-                lineBuf[lineLen++] = (char)b;
-            }
-
-            bool eol     = (b == '\n');
-            bool full    = (lineLen >= (uint8_t)(sizeof(lineBuf) - 1));
-            bool timeout = ((millis() - lineStartMs) > 200UL);
-
-            if (eol || full || timeout) {
-                lineBuf[lineLen] = '\0';
-                if (eol && lineLen >= 5 &&
-                    lineBuf[0] == '$' && lineBuf[1] == 'W' &&
-                    lineBuf[2] == 'M' && lineBuf[3] == ',') {
-                    sensorTdsMeter_onFrame(lineBuf);
-                }
-                lineStarted = false;
-                lineLen     = 0;
-            }
-        } else {
-            if (b == '$') {
-                lineStarted  = true;
-                lineStartMs  = millis();
-                lineBuf[0]   = '$';
-                lineLen      = 1;
-            } else {
-                mbPush(b);
-            }
-        }
+        processByte((uint8_t)rs485Serial.read());
     }
 }
 
@@ -101,3 +107,15 @@ void rs485Mux_write(const uint8_t* data, size_t len) {
     rs485Serial.write(data, len);
     rs485Serial.flush();
 }
+
+#ifdef UNIT_TEST
+void rs485Mux_inject(uint8_t b) {
+    processByte(b);
+}
+
+void rs485Mux_resetForTest() {
+    mbHead = mbTail = mbCount = 0;
+    lineLen = 0;
+    lineStarted = false;
+}
+#endif

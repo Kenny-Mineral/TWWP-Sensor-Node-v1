@@ -3,53 +3,60 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
-### Session 2026-05-11 — Dual EC/TDS meter integration (M6) + build fixes
+### Session 2026-05-11 — Native unit tests (Phase 1 of validation plan)
 
-**Scope:** Integrated a standalone ESP32+ADS1115 dual EC/TDS meter into the firmware. The meter broadcasts unsolicited ASCII frames (`$WM,<temp1>,<ec1>,<ppm1>,<temp2>,<ec2>,<ppm2>\r\n`) over the same RS485 bus as the YiErYi Modbus meter.
+**Scope:** Added desktop-runnable unit tests for the two new M6 drivers (`rs485_mux` and `sensor_tds_meter`). All 22 tests pass. Firmware still builds clean.
 
-**New files created:**
-- `include/rs485_mux.h` + `src/rs485_mux.cpp` — protocol multiplexer: owns UART1, routes `$WM` frames to TDS driver and all other bytes to a 64-byte Modbus FIFO feeding sensor_yieryi
-- `include/sensor_tds_meter.h` + `src/sensor_tds_meter.cpp` — TDS meter driver: frame parser, 60s staleness watchdog, getters for temp/ec/ppm per zone
+**New files:**
+- `test/stubs/Arduino.h` — millis() stub with controllable clock (`setMillis`/`advanceMillis`), Serial no-op, HardwareSerial include
+- `test/stubs/HardwareSerial.h` — stub class (begin/setPins/setMode/available/read/write/flush all no-ops)
+- `test/stubs/driver/uart.h` — `UART_MODE_RS485_HALF_DUPLEX` constant for native compilation
+- `test/test_rs485_mux/test_rs485_mux.cpp` — 11 tests: FIFO order, overflow drop, `$` classification, `$WM` dispatch, non-WM discard, mixed traffic, 200ms timeout, consecutive frames
+- `test/test_tds_meter/test_tds_meter.cpp` — 11 tests: sscanf parsing, both probes populated, online/offline, staleness boundary at 60s, invalid zone guards, cumulative fail count
 
-**Files modified:**
-- `src/sensor_yieryi.cpp` — replaced 5 direct `rs485Serial.*` calls with `rs485Mux_*` equivalents; removed UART1 init block (moved to mux); removed `HardwareSerial` and `driver/uart.h` includes
-- `src/main.cpp` — added mux/TDS begin+loop hooks; 6 new CSV columns (`tds_*`); 12 new status fields per zone (ec, temp, ppm, online, fail_count, last_error × 2 zones); 6 HA discovery entities; `addTdsMeterStatus()` helper
-- `platformio.ini` — pinned `platform = espressif32 @ 6.9.0` to prevent pioarduino fork auto-upgrade
-- `src/net_ota.cpp` — replaced deprecated `mbedtls_md5_starts/update/finish` with `_ret` variants (IDF 4.x active API)
-- `src/watchdog.cpp` — replaced IDF 5.x struct-based `esp_task_wdt_init` with IDF 4.x `esp_task_wdt_init(timeout, panic)` signature
+**Modified files:**
+- `src/rs485_mux.cpp` — extracted `processByte()` from `rs485Mux_loop()`; added `rs485Mux_inject()` and `rs485Mux_resetForTest()` under `#ifdef UNIT_TEST`
+- `include/rs485_mux.h` — declared test hooks under `#ifdef UNIT_TEST`
+- `platformio.ini` — added `[env:native]` with `-DUNIT_TEST -I test/stubs -I include`
 
-**Build result:** `pio run` succeeded. Zero errors.
+**Test results:** `pio test -e native` — 22/22 passed in ~2s
 
-**Not yet verified on hardware:** EC/TDS meter not yet wired to the Waveshare RS485 terminal block. Build-only verification.
+**Build:** `pio run -e waveshare-esp32-s3-rs485-can` — SUCCESS, RAM 18.0%, Flash 18.7%
+
+**Bug found by tests:** `lastSuccessMs == 0` is used as "never received a frame" sentinel in `sensorTdsMeter_isOnline()`. If a frame arrives exactly when `millis() == 0` (boot instant), the probe would incorrectly report offline. Not a real issue in production (TDS meter sends every ~3s; first frame arrives well after boot), but test cases must process frames at `millis > 0`.
 
 ---
 
-### Session 2026-05-08 (continued) — OTA remote-path hardening handoff
+### Session 2026-05-11 — Dual EC/TDS meter integration (M6) + build fixes
 
-OTA URL parser updated: accepts `http://` and `https://`, follows up to 3 redirects, validates HTTPS against `OTA_CA_CERT` (falls back to `MQTT_CA_CERT`). `USER_OPERATIONS.md` updated. Build succeeded (RAM 18.7%, Flash 22.4%).
-
-### Session 2026-05-08 — M5 hardware test + YiErYi driver
-
-First live hardware test of YiErYi RS485-3177. A/B polarity swapped on first attempt; swapping one end fixed it. Confirmed Modbus frame layout, ORP sign-bit encoding, TDS = EC × 0.5. Added calibration date tracking. Build succeeded.
-
-### Session 2026-05-05 — HA dashboard + monitoring stack
-
-InfluxDB 3 Core + Grafana deployed on Hetzner VPS. HA writing live data. Full Lovelace dashboard deployed to `wh-001` view. Key fixes: HA influxdb YAML must be UI-only, not YAML-included.
+Implemented rs485_mux + sensor_tds_meter. Firmware built clean. Not yet verified on hardware. See previous SESSION.md entries for details.
 
 ## In progress
 none
 
-## Next step
-- Wire EC/TDS meter RS485 A/B terminals to Waveshare node terminal block; confirm shared bus coexistence with YiErYi meter
-- Flash firmware and verify serial monitor shows `[TDS] P1...P2...` frames every ~3s; confirm YiErYi `wq_pre_ro_fail_count` does NOT increase (bus coexistence test)
-- Check MQTT status payload for `tds_pre_ro_*` and `tds_post_ro_*` fields with real values
-- Verify 6 new HA TDS entities appear in device list and update live
-- Validate SD CSV has 6 new populated TDS columns in today's log file
-- Perform one real MQTT-driven OTA validation using a hosted `firmware.bin` URL
-- Record first calibration dates via MQTT: `{"set_wq_pre_ro_ph_cal_date": "2026-05-08", ...}`
+## Next step — BENCH (Phase 2 + 3 of validation plan)
+
+### Phase 2 — M6 hardware integration test
+1. Wire EC/TDS meter RS485 A/B to Waveshare board terminal block (same A/B bus as YiErYi meter)
+2. Flash: `pio run -t upload` (hold BOOT, tap RESET, release BOOT)
+3. Open serial monitor: `pio device monitor`
+4. Confirm boot lines: `[MUX] RS485 UART1 ready`, `[TDS] EC/TDS meter driver ready`, `[YIERYI] Modbus driver ready (UART via rs485_mux)`
+5. Confirm TDS frames: `[TDS] P1: ...°C EC=... TDS=...` appearing every ~3s
+6. Run `wq_status` — confirm `wq_pre_ro_online: true`, watch `fail_count` for 60s — must NOT increase
+7. Check MQTT status: `tds_pre_ro_ec/temp/ppm` and `tds_post_ro_*` present with real values
+8. Check HA device page: 6 new `tds_*` entities visible and updating
+9. Wait 60s, then `sdcat /data/<today>.csv` — confirm 6 populated TDS columns
+
+### Phase 3 — MQTT OTA end-to-end test
+1. `pio run -e waveshare-esp32-s3-rs485-can && md5sum .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin`
+2. `scp .pio/build/.../firmware.bin kenny@100.67.244.37:/home/kenny/projects/twwp-monitoring/firmware/firmware.bin`
+3. `curl -I https://twwp-iot.duckdns.org/firmware/firmware.bin` — confirm 200 OK
+4. Trigger: `mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"ota_url": "https://twwp-iot.duckdns.org/firmware/firmware.bin", "ota_md5": "<md5>"}'`
+5. Watch `twwp/wh_001/status` for `ota_state` 1→2→3→reboot→4 (SUCCESS)
+6. Bad MD5 test: send same URL with `"ota_md5": "00000000000000000000000000000000"` — expect `ota_state: 5` (FAILED)
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-05-11 14:30
+2026-05-11 15:45

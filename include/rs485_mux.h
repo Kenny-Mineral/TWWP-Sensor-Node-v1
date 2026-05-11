@@ -19,3 +19,8 @@ void    rs485Mux_loop();
 int     rs485Mux_available();           // bytes waiting in Modbus FIFO
 uint8_t rs485Mux_read();               // pop one byte from Modbus FIFO
 void    rs485Mux_write(const uint8_t* data, size_t len);  // write + flush
+
+#ifdef UNIT_TEST
+void rs485Mux_inject(uint8_t b);       // feed one byte as if from UART (tests only)
+void rs485Mux_resetForTest();          // reset all internal state (tests only)
+#endif
