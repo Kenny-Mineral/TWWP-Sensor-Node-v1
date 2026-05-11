@@ -179,7 +179,7 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
 - [x] **ArduinoOTA fix** (net_ota.cpp): `handle()` now called in all non-active states; `begin()` now always runs regardless of boot-flag path; `onError` sets IDLE not FAILED.
 - [x] **MQTT OTA remote-hosting hardening** (net_ota.cpp): OTA URL parser now accepts `http://` and `https://`, follows up to 3 redirects, and supports a separate `OTA_CA_CERT` for firmware hosts that do not share the broker CA. Reason: off-site OTA was failing under realistic hosting setups even though the base OTA feature existed.
 - [ ] Investigate ArduinoOTA LAN OTA — UDP invitation reaches device (port 3232 open) but device does not respond. Likely router AP/client isolation. Test: disable AP isolation or use tcpdump on device's RSSI-confirmed AP.
-- [ ] Validate MQTT-driven OTA end-to-end after the remote-hosting hardening. Use a real hosted `firmware.bin`, confirm `ota_state` progress and reboot on success, or capture exact `ota_error` on failure.
+- [x] Validate MQTT-driven OTA end-to-end after the remote-hosting hardening. Use a real hosted `firmware.bin`, confirm `ota_state` progress and reboot on success, or capture exact `ota_error` on failure.
 - [ ] Confirm Modbus addresses on post-RO and remineralised meters before enabling those zones in `/config/node.json`.
 - [ ] Create Grafana dashboards: Overview, Flow History, Water Quality (3-zone), System. Export JSON to `grafana/provisioning/dashboards/`.
 
