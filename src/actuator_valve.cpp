@@ -71,12 +71,13 @@ bool actuatorValve_isAuto() {
 }
 
 void actuatorValve_loop() {
-    if (!_autoMode) return;
-
-    float rate = sensorFlow_getRateLpm(1);
-    if (rate > FLOW_ACTIVE_THRESHOLD_LPM && !_isOpen) {
-        actuatorValve_open();
-    } else if (rate <= FLOW_ACTIVE_THRESHOLD_LPM && _isOpen) {
-        actuatorValve_close();
+    if (_autoMode && strcmp(_triggerSource, "flow") == 0) {
+        float rate = sensorFlow_getRateLpm(1);
+        if (rate > FLOW_ACTIVE_THRESHOLD_LPM && !_isOpen) {
+            actuatorValve_open();
+        } else if (rate <= FLOW_ACTIVE_THRESHOLD_LPM && _isOpen) {
+            actuatorValve_close();
+        }
     }
+    // safety timers will be called here in Task 4
 }

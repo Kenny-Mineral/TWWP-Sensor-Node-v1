@@ -111,6 +111,41 @@ void test_unknown_trigger_source_accepted() {
     TEST_ASSERT_EQUAL_STRING("qr", actuatorValve_getTriggerSource());
 }
 
+void test_flow_trigger_opens_on_flow() {
+    actuatorValve_setTriggerSource("flow");
+    actuatorValve_setAuto(true);
+    g_flowRate = 0.1f;
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+}
+
+void test_flow_trigger_closes_on_no_flow() {
+    actuatorValve_setTriggerSource("flow");
+    actuatorValve_setAuto(true);
+    g_flowRate = 0.1f;
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+    g_flowRate = 0.0f;
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isOpen());
+}
+
+void test_manual_trigger_does_not_open_on_flow() {
+    actuatorValve_setTriggerSource("manual");
+    actuatorValve_setAuto(true);
+    g_flowRate = 1.0f;
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isOpen());
+}
+
+void test_unknown_trigger_treated_as_manual() {
+    actuatorValve_setTriggerSource("qr");
+    actuatorValve_setAuto(true);
+    g_flowRate = 1.0f;
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isOpen());
+}
+
 void setUp()    { resetAll(); }
 void tearDown() {}
 
@@ -119,5 +154,9 @@ int main(int, char**) {
     RUN_TEST(test_defaults_after_begin);
     RUN_TEST(test_setters_persist_values);
     RUN_TEST(test_unknown_trigger_source_accepted);
+    RUN_TEST(test_flow_trigger_opens_on_flow);
+    RUN_TEST(test_flow_trigger_closes_on_no_flow);
+    RUN_TEST(test_manual_trigger_does_not_open_on_flow);
+    RUN_TEST(test_unknown_trigger_treated_as_manual);
     return UNITY_END();
 }
