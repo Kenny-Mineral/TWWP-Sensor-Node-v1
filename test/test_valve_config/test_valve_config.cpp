@@ -149,6 +149,145 @@ void test_unknown_trigger_treated_as_manual() {
 void setUp()    { resetAll(); }
 void tearDown() {}
 
+// ── Task 4: Safety timer tests ────────────────────────────────────────────────
+
+void test_idle_timeout_fires_at_configured_seconds() {
+    actuatorValve_setIdleTimeoutS(10);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(9999);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+    setMillis(10001);
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isOpen());
+}
+
+void test_idle_timeout_resets_while_flow_present() {
+    actuatorValve_setIdleTimeoutS(10);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.1f;
+    setMillis(15000);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+}
+
+void test_max_open_fires_at_configured_seconds() {
+    actuatorValve_setMaxOpenS(10);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.5f;
+    setMillis(9999);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+    setMillis(10001);
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isOpen());
+}
+
+void test_max_open_resets_on_valve_close() {
+    actuatorValve_setMaxOpenS(10);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    actuatorValve_close();
+    actuatorValve_open();
+    setMillis(9999);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+}
+
+void test_idle_timeout_zero_means_disabled() {
+    actuatorValve_setIdleTimeoutS(0);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(99999);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+}
+
+void test_max_open_zero_means_disabled() {
+    actuatorValve_setMaxOpenS(0);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    setMillis(99999);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isOpen());
+}
+
+// ── Task 5: Safety close sequence tests ──────────────────────────────────────
+
+void test_safety_close_logs_to_sd() {
+    actuatorValve_setIdleTimeoutS(5);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(6000);
+    actuatorValve_loop();
+    TEST_ASSERT_NOT_NULL(strstr(g_lastLogEvent, "[VALVE] safety close"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastLogEvent, "idle_timeout"));
+}
+
+void test_safety_close_publishes_alert_when_enabled() {
+    actuatorValve_setIdleTimeoutS(5);
+    actuatorValve_setTimeoutAlert(true);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(6000);
+    actuatorValve_loop();
+    TEST_ASSERT_NOT_NULL(strstr(g_lastAlertPayload, "VALVE_SAFETY_CLOSE"));
+    TEST_ASSERT_NOT_NULL(strstr(g_lastAlertPayload, "idle_timeout"));
+}
+
+void test_safety_close_no_alert_when_disabled() {
+    actuatorValve_setIdleTimeoutS(5);
+    actuatorValve_setTimeoutAlert(false);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(6000);
+    actuatorValve_loop();
+    TEST_ASSERT_EQUAL(0, g_lastAlertPayload[0]);
+}
+
+void test_safety_close_disables_auto_when_flag_set() {
+    actuatorValve_setIdleTimeoutS(5);
+    actuatorValve_setTimeoutDisableAuto(true);
+    actuatorValve_setAuto(true);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(6000);
+    actuatorValve_loop();
+    TEST_ASSERT_FALSE(actuatorValve_isAuto());
+}
+
+void test_safety_close_leaves_auto_on_when_flag_not_set() {
+    actuatorValve_setIdleTimeoutS(5);
+    actuatorValve_setTimeoutDisableAuto(false);
+    actuatorValve_setAuto(true);
+    actuatorValve_setTriggerSource("manual");
+    setMillis(0);
+    actuatorValve_open();
+    g_flowRate = 0.0f;
+    setMillis(6000);
+    actuatorValve_loop();
+    TEST_ASSERT_TRUE(actuatorValve_isAuto());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_defaults_after_begin);
@@ -158,5 +297,18 @@ int main(int, char**) {
     RUN_TEST(test_flow_trigger_closes_on_no_flow);
     RUN_TEST(test_manual_trigger_does_not_open_on_flow);
     RUN_TEST(test_unknown_trigger_treated_as_manual);
+    // Task 4: Safety timers
+    RUN_TEST(test_idle_timeout_fires_at_configured_seconds);
+    RUN_TEST(test_idle_timeout_resets_while_flow_present);
+    RUN_TEST(test_max_open_fires_at_configured_seconds);
+    RUN_TEST(test_max_open_resets_on_valve_close);
+    RUN_TEST(test_idle_timeout_zero_means_disabled);
+    RUN_TEST(test_max_open_zero_means_disabled);
+    // Task 5: Safety close sequence
+    RUN_TEST(test_safety_close_logs_to_sd);
+    RUN_TEST(test_safety_close_publishes_alert_when_enabled);
+    RUN_TEST(test_safety_close_no_alert_when_disabled);
+    RUN_TEST(test_safety_close_disables_auto_when_flag_set);
+    RUN_TEST(test_safety_close_leaves_auto_on_when_flag_not_set);
     return UNITY_END();
 }

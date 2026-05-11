@@ -3,9 +3,17 @@
 #include "config.h"
 #include "sensor_flow.h"
 #include <string.h>
+#ifndef UNIT_TEST
+#include <Preferences.h>
+#include "store_sd.h"
+#include "net_mqtt.h"
+#endif
 
 static bool _isOpen   = false;
 static bool _autoMode = true;
+
+static unsigned long _valveOpenedAtMs = 0;
+static unsigned long _lastFlowSeenMs  = 0;
 
 static char     _valveType[16]      = "test";
 static char     _triggerSource[24]  = "flow";
@@ -45,17 +53,25 @@ bool actuatorValve_begin() {
     _maxOpenS           = 0;
     _timeoutDisableAuto = false;
     _timeoutAlert       = true;
+    _valveOpenedAtMs    = 0;
+    _lastFlowSeenMs     = 0;
     return true;
 }
 
 void actuatorValve_open() {
+    if (!_isOpen) {
+        _valveOpenedAtMs = millis();
+        _lastFlowSeenMs  = millis();
+    }
     digitalWrite(PIN_VALVE, LOW);
     _isOpen = true;
 }
 
 void actuatorValve_close() {
     digitalWrite(PIN_VALVE, HIGH);
-    _isOpen = false;
+    _isOpen          = false;
+    _valveOpenedAtMs = 0;
+    _lastFlowSeenMs  = 0;
 }
 
 bool actuatorValve_isOpen() {
@@ -70,6 +86,59 @@ bool actuatorValve_isAuto() {
     return _autoMode;
 }
 
+static void runSafetyTimers() {
+    if (!_isOpen) return;
+
+    unsigned long now = millis();
+
+    if (sensorFlow_getRateLpm(1) > FLOW_ACTIVE_THRESHOLD_LPM) {
+        _lastFlowSeenMs = now;
+    }
+
+    // Idle timer
+    if (_idleTimeoutS > 0) {
+        unsigned long idleElapsed = now - _lastFlowSeenMs;
+        if (idleElapsed >= (unsigned long)_idleTimeoutS * 1000UL) {
+            actuatorValve_close();
+            if (_timeoutDisableAuto) actuatorValve_setAuto(false);
+            if (_timeoutAlert) {
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                    "{\"type\":\"VALVE_SAFETY_CLOSE\",\"reason\":\"idle_timeout\",\"timeout_s\":%lu}",
+                    (unsigned long)_idleTimeoutS);
+                netMqtt_publishSub(TOPIC_ALERT, msg);
+            }
+            char log[128];
+            snprintf(log, sizeof(log),
+                "[VALVE] safety close: reason=idle_timeout, timeout_s=%lu",
+                (unsigned long)_idleTimeoutS);
+            storeSd_logEvent(log);
+            return;
+        }
+    }
+
+    // Max-open timer
+    if (_maxOpenS > 0) {
+        unsigned long openElapsed = now - _valveOpenedAtMs;
+        if (openElapsed >= (unsigned long)_maxOpenS * 1000UL) {
+            actuatorValve_close();
+            if (_timeoutDisableAuto) actuatorValve_setAuto(false);
+            if (_timeoutAlert) {
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                    "{\"type\":\"VALVE_SAFETY_CLOSE\",\"reason\":\"max_open\",\"timeout_s\":%lu}",
+                    (unsigned long)_maxOpenS);
+                netMqtt_publishSub(TOPIC_ALERT, msg);
+            }
+            char log[128];
+            snprintf(log, sizeof(log),
+                "[VALVE] safety close: reason=max_open, timeout_s=%lu",
+                (unsigned long)_maxOpenS);
+            storeSd_logEvent(log);
+        }
+    }
+}
+
 void actuatorValve_loop() {
     if (_autoMode && strcmp(_triggerSource, "flow") == 0) {
         float rate = sensorFlow_getRateLpm(1);
@@ -79,5 +148,5 @@ void actuatorValve_loop() {
             actuatorValve_close();
         }
     }
-    // safety timers will be called here in Task 4
+    runSafetyTimers();
 }
