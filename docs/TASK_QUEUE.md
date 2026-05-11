@@ -185,7 +185,26 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
 
 ---
 
-## M6 — HealthService + CalibrationService
+## M6 — Dual EC/TDS Meter (RS485 ASCII mux) ✓ DONE
+
+Standalone ESP32-WROOM-32 + ADS1115 EC/TDS meter transmitting `$WM,...` ASCII frames on shared RS485 bus. Multiplexed with YiErYi Modbus by first byte (`$` vs `0x01`).
+
+- [x] `src/rs485_mux.{h,cpp}` — byte classifier, 64-byte Modbus FIFO, ASCII accumulator, 200ms timeout guard, dispatches `$WM` frames to TDS driver. `processByte()` extracted for testability.
+- [x] `src/sensor_tds_meter.{h,cpp}` — `sscanf` parser for 6-field `$WM` frame, dual-probe struct (PRE_RO / POST_RO), 60s staleness watchdog, fail counter.
+- [x] Publish 12 TDS fields in `twwp/<id>/status` — `tds_pre_ro_ec/temp/ppm/online/fail_count/last_error` × 2 zones.
+- [x] HA MQTT discovery: 6 sensor entities (ec/temp/ppm × 2 zones).
+- [x] SD CSV: 6 new columns appended to `/data/YYYY-MM-DD.csv`.
+- [x] Native unit tests: 22 tests (11 mux + 11 TDS parser) — `pio test -e native` all pass. `[env:native]` added to `platformio.ini`. Stubs in `test/stubs/`.
+- [x] **Phase 2 bench test (2026-05-12)**: `[TDS] P1/P2` frames confirmed every ~3s. HA receiving all 6 TDS entities with real values. YiErYi water quality also present — bus coexistence confirmed. No SD failure alerts.
+- [x] `docs/USER_OPERATIONS.md` updated: serial monitor receive-only, SD silent writes, HWCDC JSON truncation, DI/RO wiring gotcha, TDS calibration note.
+- [ ] **Grafana panels**: TDS fields reach InfluxDB via HA but dashboard panels not yet created (part of Grafana dashboards task in M5 above).
+- [ ] **TDS probe calibration**: EC×0.5 factor is fixed in firmware. Absolute accuracy requires calibrating the WROOM-32 EC/TDS meter with standard solutions via vendor software.
+
+**Wiring note:** WROOM-32 RS485 module DI (Data In = TX from MCU) and RO (Receiver Output = RX to MCU) were swapped on first bench attempt. Correct wiring: DI→TX pin, RO→RX pin of WROOM-32.
+
+---
+
+## M7 — HealthService + CalibrationService
 
 - [ ] `src/services/HealthService.{h,cpp}`: validates `SensorData`, sets `flow_ok`, `pressure_ok`, `power_ok`.
 - [ ] `src/services/CalibrationService.{h,cpp}`: loads from `node.json` calibration block.
@@ -194,7 +213,7 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
 
 ---
 
-## M7 — AlertService + TelemetryService
+## M8 — AlertService + TelemetryService
 
 - [ ] `src/services/AlertService.{h,cpp}`: fires on state change only. Types: LEAK_DETECTED, FLOW_ANOMALY, PRESSURE_OUT_OF_RANGE, LOW_VOLTAGE, SENSOR_FAILURE, DEVICE_REBOOT.
 - [ ] `src/services/TelemetryService.{h,cpp}`: sends snapshot to `twwp/<id>/status` every 10s.
@@ -202,7 +221,7 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
 
 ---
 
-## M8 — Device lifecycle
+## M9 — Device lifecycle
 
 - [ ] First-connect registration: publish `{device_id, firmware_version, mac, ip}` to `twwp/register`.
 - [ ] Decommission command: `{"action":"decommission"}` → wipe NVS, reboot to captive portal.

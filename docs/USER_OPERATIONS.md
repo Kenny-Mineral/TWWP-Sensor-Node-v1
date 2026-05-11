@@ -63,6 +63,15 @@ Open the serial monitor:
 pio device monitor
 ```
 
+**Important:** the PlatformIO serial monitor in VS Code is **receive-only** — keystrokes are not forwarded to the device. To type commands, use `screen` instead:
+
+```bash
+sudo apt install screen      # first time only
+screen /dev/ttyACM0 115200
+```
+
+To exit screen: `Ctrl+A` then `K` then `Y`. Find the correct port with `ls /dev/ttyACM*`.
+
 Then type one command per line and press Enter.
 
 ```text
@@ -506,6 +515,8 @@ Example rows:
 Units: `ts` = Unix timestamp, flow values = litres, `leak` = 0 or 1, `supply_voltage` = volts.
 
 The data log writes regardless of WiFi or MQTT status — it is the offline record. Existing files keep their original columns — only new files created after the M2.5 firmware update will include `supply_voltage`.
+
+**SD writes are silent on success.** No `[SD]` lines appear in the serial monitor for normal writes — only failures are logged (via `[SD] data write failed` or an MQTT alert to `twwp/<id>/log`). Absence of `[SD]` output after 60+ seconds of uptime is normal and expected.
 
 View or export via serial:
 
@@ -1096,6 +1107,12 @@ The EC/TDS meter's RS485 A/B terminals connect to the **same Waveshare board RS4
 | B | B (with YiErYi B) |
 | GND | Shared GND |
 
+**RS485 module pin naming (WROOM-32 side):** The module has `DI` (Data In) and `RO` (Receiver Output) pins — these are the UART side, not the A/B bus side.
+- `DI` = data going **into** the module to transmit → connects to **TX** of the WROOM-32
+- `RO` = received data **out** of the module → connects to **RX** of the WROOM-32
+
+Swapping DI and RO is a common wiring mistake. Symptom: no `[TDS]` frames in serial monitor despite correct A/B polarity.
+
 ### MQTT status fields
 
 All TDS meter fields appear in `twwp/<node_id>/status` alongside `wq_*` fields:
@@ -1150,8 +1167,10 @@ tds_pre_ro_ec, tds_pre_ro_temp, tds_pre_ro_ppm, tds_post_ro_ec, tds_post_ro_temp
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `tds_pre_ro_online: false` after 60s | Meter not powered or A/B swapped | Check power; swap A/B on one end |
+| No `[TDS]` frames despite correct A/B | DI and RO swapped on WROOM-32 RS485 module | Swap the two UART wires on the module side (DI↔RO) |
 | `fail_count` incrementing | Frame parse failure — baud rate mismatch or noise | EC/TDS meter must transmit at 9600 baud; check cable length |
 | `tds_*` fields absent from MQTT status | Firmware older than TDS meter integration | Reflash firmware |
+| TDS ppm reads low compared to reference meter | Default EC×0.5 conversion factor — uncalibrated probes | The conversion factor is fixed in firmware; absolute accuracy requires the EC/TDS meter to be calibrated using the vendor software with known standard solutions. P1 and P2 readings relative to each other are accurate even without calibration. |
 
 ---
 
@@ -1247,6 +1266,22 @@ That is sufficient for full server access. No other credential setup is needed u
 ---
 
 ## Useful Troubleshooting Notes
+
+### Serial monitor JSON truncation
+
+The M0 status heartbeat JSON is long (~800 bytes). When the USB CDC (HWCDC) write buffer fills faster than the PC can drain it, the ESP32 prints:
+
+```
+[HWCDC.cpp:467] write(): write failed due to waiting USB Host - timeout
+```
+
+The JSON is cut off mid-field at that point. This is **cosmetic only** — MQTT publishing over WiFi is completely unaffected. The full JSON payload is always visible via `mosquitto_sub -t 'twwp/wh_001/status'`.
+
+The TDS and water quality fields appear near the end of the JSON and are most likely to be cut off in the serial monitor.
+
+### `[SERIAL] console connected` appearing repeatedly
+
+If you see this line every minute or so, it means the USB CDC connection is dropping and reconnecting — a side-effect of the HWCDC write timeout above. The firmware continues running normally; only the debug serial is affected.
 
 If serial commands appear to do nothing, press Enter once more. The firmware accepts both CR and LF line endings.
 
