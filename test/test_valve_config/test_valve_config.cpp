@@ -81,8 +81,34 @@ static void resetAll() {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-void test_placeholder() {
-    TEST_ASSERT_TRUE(true);
+void test_defaults_after_begin() {
+    TEST_ASSERT_EQUAL_STRING("test",  actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("flow",  actuatorValve_getTriggerSource());
+    TEST_ASSERT_EQUAL_UINT32(0,       actuatorValve_getIdleTimeoutS());
+    TEST_ASSERT_EQUAL_UINT32(0,       actuatorValve_getMaxOpenS());
+    TEST_ASSERT_FALSE(actuatorValve_getTimeoutDisableAuto());
+    TEST_ASSERT_TRUE(actuatorValve_getTimeoutAlert());
+}
+
+void test_setters_persist_values() {
+    actuatorValve_setValveType("solenoid");
+    actuatorValve_setTriggerSource("manual");
+    actuatorValve_setIdleTimeoutS(300);
+    actuatorValve_setMaxOpenS(600);
+    actuatorValve_setTimeoutDisableAuto(true);
+    actuatorValve_setTimeoutAlert(false);
+
+    TEST_ASSERT_EQUAL_STRING("solenoid", actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("manual",   actuatorValve_getTriggerSource());
+    TEST_ASSERT_EQUAL_UINT32(300,        actuatorValve_getIdleTimeoutS());
+    TEST_ASSERT_EQUAL_UINT32(600,        actuatorValve_getMaxOpenS());
+    TEST_ASSERT_TRUE(actuatorValve_getTimeoutDisableAuto());
+    TEST_ASSERT_FALSE(actuatorValve_getTimeoutAlert());
+}
+
+void test_unknown_trigger_source_accepted() {
+    actuatorValve_setTriggerSource("qr");
+    TEST_ASSERT_EQUAL_STRING("qr", actuatorValve_getTriggerSource());
 }
 
 void setUp()    { resetAll(); }
@@ -90,6 +116,8 @@ void tearDown() {}
 
 int main(int, char**) {
     UNITY_BEGIN();
-    RUN_TEST(test_placeholder);
+    RUN_TEST(test_defaults_after_begin);
+    RUN_TEST(test_setters_persist_values);
+    RUN_TEST(test_unknown_trigger_source_accepted);
     return UNITY_END();
 }
