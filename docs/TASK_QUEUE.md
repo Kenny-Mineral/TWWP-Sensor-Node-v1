@@ -51,7 +51,7 @@ All items complete. TLS on port 8883 confirmed working end-to-end.
 - [x] `net_mqtt.cpp`: `WiFiClientSecure` + `setCACert(MQTT_CA_CERT)`. Never falls back to plain MQTT.
 - [x] Client ID: `"twwp_" NODE_ID` (built in `netMqtt_loop()`).
 - [x] TLS handshake failure: logs SSL error to serial + SD crash log, retries with exponential backoff.
-- [ ] Create `docs/MQTT_TOPIC_MAP.md` — topic list with QoS, retain, and description. (Deferred to M1.)
+- [x] Create `docs/MQTT_TOPIC_MAP.md` — topic list with QoS, retain, and description. (Done in M1.)
 
 ---
 
