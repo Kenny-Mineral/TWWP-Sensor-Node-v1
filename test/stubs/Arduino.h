@@ -9,6 +9,21 @@
 typedef unsigned long ulong;
 typedef uint8_t       byte;
 
+// GPIO constants
+#define OUTPUT  0x01
+#define INPUT   0x00
+#define HIGH    0x01
+#define LOW     0x00
+
+// Minimal Print stub used by store_sd.h and similar headers
+struct Print {
+    void println(const char*) {}
+    void print(const char*) {}
+    template<typename T> void println(T) {}
+    template<typename T> void print(T) {}
+    void printf(const char*, ...) {}
+};
+
 // Controllable fake clock — tests call setMillis() / advanceMillis()
 static unsigned long g_millis = 0;
 inline unsigned long millis()                    { return g_millis; }
