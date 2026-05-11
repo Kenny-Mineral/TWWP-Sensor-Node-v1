@@ -8,12 +8,7 @@
 static bool watchdogReady = false;
 
 bool watchdog_begin() {
-    const esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms = WATCHDOG_TIMEOUT_S * 1000,
-        .idle_core_mask = 0,
-        .trigger_panic = true,
-    };
-    esp_err_t err = esp_task_wdt_init(&wdt_cfg);
+    esp_err_t err = esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         Serial.print("[WDT] init failed: ");
         Serial.println(static_cast<int>(err));

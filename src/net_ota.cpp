@@ -447,7 +447,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
     mbedtls_md5_init(&md5Context);
     bool md5Started = false;
     if (md5Expected != nullptr && md5Expected[0] != '\0') {
-        if (mbedtls_md5_starts(&md5Context) != 0) {
+        if (mbedtls_md5_starts_ret(&md5Context) != 0) {
             setError("failed to start MD5");
             Update.abort();
             client->stop();
@@ -518,7 +518,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
 
         lastDataMs = millis();
 
-        if (md5Started && mbedtls_md5_update(&md5Context, buffer, bytesRead) != 0) {
+        if (md5Started && mbedtls_md5_update_ret(&md5Context, buffer, bytesRead) != 0) {
             setError("failed to update MD5");
             Update.abort();
             client->stop();
@@ -547,7 +547,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
     if (md5Started) {
         uint8_t digest[16] = {0};
         char actualMd5[OTA_MD5_HEX_LEN + 1] = {0};
-        if (mbedtls_md5_finish(&md5Context, digest) != 0) {
+        if (mbedtls_md5_finish_ret(&md5Context, digest) != 0) {
             setError("failed to finish MD5");
             Update.abort();
             mbedtls_md5_free(&md5Context);

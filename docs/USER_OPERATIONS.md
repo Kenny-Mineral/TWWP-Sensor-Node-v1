@@ -1076,6 +1076,85 @@ Optional runtime config in `/config/node.json` under the `water_quality` key:
 
 ---
 
+## Dual EC/TDS Meter
+
+A standalone ESP32-WROOM-32 + ADS1115 EC/TDS meter (separate device) transmits unsolicited ASCII frames over the **same RS485 bus** as the YiErYi water quality meters every ~3 seconds:
+
+```
+$WM,<temp1>,<ec1>,<ppm1>,<temp2>,<ec2>,<ppm2>\r\n
+```
+
+Probe 1 = pre-RO zone, Probe 2 = post-RO zone. The firmware multiplexes both protocols on UART1 without polling — frames are dispatched by first byte (`$` for ASCII, `0x01` for Modbus).
+
+### Wiring
+
+The EC/TDS meter's RS485 A/B terminals connect to the **same Waveshare board RS485 terminal block** as the YiErYi meter. No additional wiring to the board — extend the existing A/B bus.
+
+| EC/TDS meter terminal | RS485 bus |
+|---|---|
+| A | A (with YiErYi A) |
+| B | B (with YiErYi B) |
+| GND | Shared GND |
+
+### MQTT status fields
+
+All TDS meter fields appear in `twwp/<node_id>/status` alongside `wq_*` fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `tds_pre_ro_ec` | float or null | Pre-RO EC in µS/cm. Null if offline or stale (>60s). |
+| `tds_pre_ro_temp` | float or null | Pre-RO water temperature in °C (1 decimal). |
+| `tds_pre_ro_ppm` | float or null | Pre-RO TDS in ppm. |
+| `tds_pre_ro_online` | bool | `true` if a valid frame was received within the last 60s. |
+| `tds_pre_ro_fail_count` | int | Parse failure counter since boot. |
+| `tds_pre_ro_last_error` | string | `""` on success; `"bad frame"` on parse failure. |
+| `tds_post_ro_ec` | float or null | Post-RO EC in µS/cm. |
+| `tds_post_ro_temp` | float or null | Post-RO water temperature in °C. |
+| `tds_post_ro_ppm` | float or null | Post-RO TDS in ppm. |
+| `tds_post_ro_online` | bool | `true` if a valid frame received within 60s. |
+| `tds_post_ro_fail_count` | int | Parse failure counter. |
+| `tds_post_ro_last_error` | string | `""` on success; `"bad frame"` on parse failure. |
+
+### HA entities (6 total)
+
+Auto-discovered via MQTT HA discovery on first boot after the EC/TDS meter is connected:
+
+- `sensor.wh_001_tds_pre_ro_ec` (µS/cm)
+- `sensor.wh_001_tds_pre_ro_temp` (°C, device_class: temperature)
+- `sensor.wh_001_tds_pre_ro_ppm` (ppm)
+- `sensor.wh_001_tds_post_ro_ec` (µS/cm)
+- `sensor.wh_001_tds_post_ro_temp` (°C, device_class: temperature)
+- `sensor.wh_001_tds_post_ro_ppm` (ppm)
+
+### SD CSV columns
+
+Six new columns are appended to the daily log after existing water quality columns:
+
+```
+tds_pre_ro_ec, tds_pre_ro_temp, tds_pre_ro_ppm, tds_post_ro_ec, tds_post_ro_temp, tds_post_ro_ppm
+```
+
+### Boot log output
+
+```
+[MUX] RS485 UART1 ready
+[TDS] EC/TDS meter driver ready
+...
+[TDS] P1: 28.5°C  EC=412 µS/cm  TDS=206 ppm | P2: 28.1°C  EC=18 µS/cm  TDS=9 ppm
+```
+
+`P1` and `P2` lines appear in the serial monitor every ~3 seconds when the EC/TDS meter is powered on the bus.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `tds_pre_ro_online: false` after 60s | Meter not powered or A/B swapped | Check power; swap A/B on one end |
+| `fail_count` incrementing | Frame parse failure — baud rate mismatch or noise | EC/TDS meter must transmit at 9600 baud; check cable length |
+| `tds_*` fields absent from MQTT status | Firmware older than TDS meter integration | Reflash firmware |
+
+---
+
 ## Water Quality Meter — Troubleshooting
 
 | Symptom | Likely cause | Fix |

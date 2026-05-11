@@ -178,6 +178,31 @@ HA entities (12 total, e.g.):
 - `sensor.wh_001_wq_post_ro_ph`, ..., `sensor.wh_001_wq_post_ro_temp`
 - `sensor.wh_001_wq_remin_ph`, ..., `sensor.wh_001_wq_remin_temp`
 
+#### Dual EC/TDS meter (M6 — ASCII RS485)
+
+Standalone ESP32+ADS1115 EC/TDS meter on same RS485 bus. Frames parsed by rs485_mux; no polling. Fields use `tds_` prefix to avoid collision with `wq_` fields above.
+
+| Status field | Type | Zone | Unit | Notes |
+|---|---|---|---|---|
+| `tds_pre_ro_ec` | float/null | Pre-RO | µS/cm | Null if offline or stale >60s |
+| `tds_pre_ro_temp` | float/null | Pre-RO | °C | 1 decimal place |
+| `tds_pre_ro_ppm` | float/null | Pre-RO | ppm | |
+| `tds_pre_ro_online` | bool | Pre-RO | — | `true` if frame received within 60s |
+| `tds_pre_ro_fail_count` | int | Pre-RO | — | Parse failure counter |
+| `tds_pre_ro_last_error` | string | Pre-RO | — | `""` ok, `"bad frame"` on parse failure |
+| `tds_post_ro_ec` | float/null | Post-RO | µS/cm | |
+| `tds_post_ro_temp` | float/null | Post-RO | °C | |
+| `tds_post_ro_ppm` | float/null | Post-RO | ppm | |
+| `tds_post_ro_online` | bool | Post-RO | — | |
+| `tds_post_ro_fail_count` | int | Post-RO | — | |
+| `tds_post_ro_last_error` | string | Post-RO | — | |
+
+HA discovery topics: `homeassistant/sensor/twwp_<id>_tds_<zone>_<metric>/config`
+
+HA entities (6 total):
+- `sensor.wh_001_tds_pre_ro_ec`, `sensor.wh_001_tds_pre_ro_temp`, `sensor.wh_001_tds_pre_ro_ppm`
+- `sensor.wh_001_tds_post_ro_ec`, `sensor.wh_001_tds_post_ro_temp`, `sensor.wh_001_tds_post_ro_ppm`
+
 ---
 
 ### OTA diagnostics (M4)

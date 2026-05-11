@@ -17,6 +17,8 @@
 #include "sensor_flow.h"
 #include "session_flow.h"
 #include "sensor_voltage.h"
+#include "rs485_mux.h"
+#include "sensor_tds_meter.h"
 #include "sensor_yieryi.h"
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
@@ -92,6 +94,29 @@ static void addWaterQualityStatus(JsonDocument& doc, uint8_t zone, const char* p
     doc[key] = sensorYieryi_getOrpCalDate(zone);
     snprintf(key, sizeof(key), "wq_%s_ec_cal_date", prefix);
     doc[key] = sensorYieryi_getEcCalDate(zone);
+}
+
+static void addTdsMeterStatus(JsonDocument& doc, uint8_t zone, const char* prefix) {
+    char key[48];
+    bool online = sensorTdsMeter_isOnline(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_online", prefix);
+    doc[key] = online;
+
+    snprintf(key, sizeof(key), "tds_%s_ec", prefix);
+    setJsonFloatOrNull(doc, key, online, sensorTdsMeter_getEc(zone), 0);
+
+    snprintf(key, sizeof(key), "tds_%s_temp", prefix);
+    setJsonFloatOrNull(doc, key, online, sensorTdsMeter_getTemp(zone), 1);
+
+    snprintf(key, sizeof(key), "tds_%s_ppm", prefix);
+    setJsonFloatOrNull(doc, key, online, sensorTdsMeter_getTds(zone), 0);
+
+    snprintf(key, sizeof(key), "tds_%s_fail_count", prefix);
+    doc[key] = sensorTdsMeter_getFailCount(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_last_error", prefix);
+    doc[key] = sensorTdsMeter_getLastError(zone);
 }
 
 static const char* csvFloatOrBlank(char* out, size_t outLen, bool valid, float value, uint8_t decimals) {
@@ -199,6 +224,9 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     addWaterQualityStatus(doc, YIERYI_ZONE_PRE_RO, "pre_ro");
     addWaterQualityStatus(doc, YIERYI_ZONE_POST_RO, "post_ro");
     addWaterQualityStatus(doc, YIERYI_ZONE_REMIN, "remin");
+
+    addTdsMeterStatus(doc, TDS_ZONE_PRE_RO,  "pre_ro");
+    addTdsMeterStatus(doc, TDS_ZONE_POST_RO, "post_ro");
 
     char payload[4096];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
@@ -1327,6 +1355,46 @@ static bool publishHaDiscoveryWaterQuality() {
     return ok;
 }
 
+static bool publishHaDiscoveryTdsMeter() {
+    bool ok = true;
+
+    struct ZoneDef {
+        const char* suffix;
+        const char* name;
+        const char* subId;
+        uint8_t     zone;
+    };
+    const ZoneDef zoneDefs[] = {
+        { "pre_ro",  "Pre-RO TDS Meter",  "twwp_" NODE_ID "_tds_pre_ro",  TDS_ZONE_PRE_RO  },
+        { "post_ro", "Post-RO TDS Meter", "twwp_" NODE_ID "_tds_post_ro", TDS_ZONE_POST_RO },
+    };
+
+    for (const auto& z : zoneDefs) {
+        char uid[64];
+        char key[32];
+        char name[64];
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_tds_%s_ec", z.suffix);
+        snprintf(key, sizeof(key), "tds_%s_ec", z.suffix);
+        snprintf(name, sizeof(name), "%s EC", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "µS/cm", "", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_tds_%s_temp", z.suffix);
+        snprintf(key, sizeof(key), "tds_%s_temp", z.suffix);
+        snprintf(name, sizeof(name), "%s Temperature", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "°C", "temperature", "measurement", z.subId, z.name);
+
+        snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_tds_%s_ppm", z.suffix);
+        snprintf(key, sizeof(key), "tds_%s_ppm", z.suffix);
+        snprintf(name, sizeof(name), "%s TDS", z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "ppm", "", "measurement", z.subId, z.name);
+    }
+
+    Serial.print("[MQTT] HA TDS meter discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static void publishOnlineState() {
     if (!netMqtt_isConnected()) {
         return;
@@ -1346,6 +1414,7 @@ static void publishOnlineState() {
     publishHaDiscoveryVoltage();
     publishHaDiscoveryValve();
     publishHaDiscoveryWaterQuality();
+    publishHaDiscoveryTdsMeter();
     publishM0Status(true, false);
     sessionFlow_republishRecentSessions();
     lastHeartbeatMs = millis();
@@ -1506,7 +1575,9 @@ static const char* DATA_LOG_HEADER =
     "supply_voltage,"
     "wq_pre_ro_ph,wq_pre_ro_orp,wq_pre_ro_ec,wq_pre_ro_temp,"
     "wq_post_ro_ph,wq_post_ro_orp,wq_post_ro_ec,wq_post_ro_temp,"
-    "wq_remin_ph,wq_remin_orp,wq_remin_ec,wq_remin_temp";
+    "wq_remin_ph,wq_remin_orp,wq_remin_ec,wq_remin_temp,"
+    "tds_pre_ro_ec,tds_pre_ro_temp,tds_pre_ro_ppm,"
+    "tds_post_ro_ec,tds_post_ro_temp,tds_post_ro_ppm";
 
 static void handleDataLog() {
     static unsigned long lastDataLogMs = 0;
@@ -1519,8 +1590,12 @@ static void handleDataLog() {
     char prePh[16], preOrp[16], preEc[16], preTemp[16];
     char postPh[16], postOrp[16], postEc[16], postTemp[16];
     char reminPh[16], reminOrp[16], reminEc[16], reminTemp[16];
+    char tdsP0ec[16], tdsP0tmp[16], tdsP0ppm[16];
+    char tdsP1ec[16], tdsP1tmp[16], tdsP1ppm[16];
+    bool tdsP0 = sensorTdsMeter_isOnline(TDS_ZONE_PRE_RO);
+    bool tdsP1 = sensorTdsMeter_isOnline(TDS_ZONE_POST_RO);
 
-    char row[360];
+    char row[480];
     snprintf(row, sizeof(row),
         "%lu,"
         "%.3f,%.3f,%.3f,"
@@ -1529,7 +1604,9 @@ static void handleDataLog() {
         "%.3f,"
         "%s,%s,%s,%s,"
         "%s,%s,%s,%s,"
-        "%s,%s,%s,%s",
+        "%s,%s,%s,%s,"
+        "%s,%s,%s,"
+        "%s,%s,%s",
         (unsigned long)timeRtc_getUnixTime(),
         sensorFlow_getRateLpm(1), sensorFlow_getTotalL(1), sensorFlow_getTodayL(1),
         sensorFlow_getRateLpm(2), sensorFlow_getTotalL(2), sensorFlow_getTodayL(2),
@@ -1546,7 +1623,13 @@ static void handleDataLog() {
         csvFloatOrBlank(reminPh, sizeof(reminPh), sensorYieryi_hasPh(YIERYI_ZONE_REMIN), sensorYieryi_getPh(YIERYI_ZONE_REMIN), 2),
         csvIntOrBlank(reminOrp, sizeof(reminOrp), sensorYieryi_hasOrp(YIERYI_ZONE_REMIN), sensorYieryi_getOrpMv(YIERYI_ZONE_REMIN)),
         csvFloatOrBlank(reminEc, sizeof(reminEc), sensorYieryi_hasEc(YIERYI_ZONE_REMIN), sensorYieryi_getEcUsCm(YIERYI_ZONE_REMIN), 0),
-        csvFloatOrBlank(reminTemp, sizeof(reminTemp), sensorYieryi_hasTemp(YIERYI_ZONE_REMIN), sensorYieryi_getTempC(YIERYI_ZONE_REMIN), 1));
+        csvFloatOrBlank(reminTemp, sizeof(reminTemp), sensorYieryi_hasTemp(YIERYI_ZONE_REMIN), sensorYieryi_getTempC(YIERYI_ZONE_REMIN), 1),
+        csvFloatOrBlank(tdsP0ec,  sizeof(tdsP0ec),  tdsP0, sensorTdsMeter_getEc(TDS_ZONE_PRE_RO),   0),
+        csvFloatOrBlank(tdsP0tmp, sizeof(tdsP0tmp), tdsP0, sensorTdsMeter_getTemp(TDS_ZONE_PRE_RO),  1),
+        csvFloatOrBlank(tdsP0ppm, sizeof(tdsP0ppm), tdsP0, sensorTdsMeter_getTds(TDS_ZONE_PRE_RO),   0),
+        csvFloatOrBlank(tdsP1ec,  sizeof(tdsP1ec),  tdsP1, sensorTdsMeter_getEc(TDS_ZONE_POST_RO),  0),
+        csvFloatOrBlank(tdsP1tmp, sizeof(tdsP1tmp), tdsP1, sensorTdsMeter_getTemp(TDS_ZONE_POST_RO), 1),
+        csvFloatOrBlank(tdsP1ppm, sizeof(tdsP1ppm), tdsP1, sensorTdsMeter_getTds(TDS_ZONE_POST_RO),  0));
 
     storeSd_logDataRow(row, DATA_LOG_HEADER);
 }
@@ -1580,7 +1663,9 @@ void setup() {
     sensorFlow_begin();
     sessionFlow_begin();
     sensorVoltage_begin();
+    rs485Mux_begin();
     sensorYieryi_begin();
+    sensorTdsMeter_begin();
     sensorPressure_begin();
     sensorTemp_begin();
     actuatorValve_begin();
@@ -1607,7 +1692,9 @@ void loop() {
     sensorFlow_loop();
     sessionFlow_loop();
     sensorVoltage_loop();
+    rs485Mux_loop();
     sensorYieryi_loop();
+    sensorTdsMeter_loop();
     sensorPressure_loop();
     sensorTemp_loop();
     actuatorValve_loop();

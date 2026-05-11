@@ -1,15 +1,12 @@
 #include "sensor_yieryi.h"
 
 #include <ArduinoJson.h>
-#include <HardwareSerial.h>
-#include <driver/uart.h>
 #include <math.h>
 
 #include "config.h"
 #include "pins.h"
+#include "rs485_mux.h"
 #include "store_sd.h"
-
-static HardwareSerial rs485Serial(1);
 
 static const uint32_t YIERYI_BAUD = 9600;
 static const uint32_t YIERYI_DEFAULT_POLL_MS = 15000UL;
@@ -59,9 +56,9 @@ struct ZoneState {
 };
 
 static ZoneState zones[YIERYI_ZONE_COUNT] = {
-    { "pre_ro",  "Pre-RO",        1, true,  true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "not polled", "" },
+    { "pre_ro",  "Pre-RO",        1, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "disabled",   "" },
     { "post_ro", "Post-RO",       2, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "disabled",   "" },
-    { "remin",   "Remineralised", 3, false, true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "disabled",   "" },
+    { "remin",   "Remineralised", 1, true,  true,  false, false, false, NAN, 0, NAN, NAN, 0, 0.0f, 0, 0, "not polled", "" },
 };
 
 static PollState pollState = PollState::Idle;
@@ -106,14 +103,14 @@ static void setError(ZoneState& zone, const char* msg) {
 
 static void resetRx() {
     rxLen = 0;
-    while (rs485Serial.available() > 0) {
-        rs485Serial.read();
+    while (rs485Mux_available() > 0) {
+        rs485Mux_read();
     }
 }
 
 static void readRx() {
-    while (rs485Serial.available() > 0) {
-        uint8_t b = static_cast<uint8_t>(rs485Serial.read());
+    while (rs485Mux_available() > 0) {
+        uint8_t b = rs485Mux_read();
         if (rxLen < sizeof(rxBuf)) {
             rxBuf[rxLen++] = b;
         } else {
@@ -198,16 +195,14 @@ static void sendModeCommand(ZoneState& zone, MeterMode mode) {
     uint8_t frame[8] = { zone.address, 0x06, 0x00, 0x05, 0x00, static_cast<uint8_t>(mode == MeterMode::Orp ? 0x01 : 0x00), 0x00, 0x00 };
     appendCrc(frame, 6);
     resetRx();
-    rs485Serial.write(frame, sizeof(frame));
-    rs485Serial.flush();
+    rs485Mux_write(frame, sizeof(frame));
 }
 
 static void sendReadCommand(ZoneState& zone) {
     uint8_t frame[8] = { zone.address, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00 };
     appendCrc(frame, 6);
     resetRx();
-    rs485Serial.write(frame, sizeof(frame));
-    rs485Serial.flush();
+    rs485Mux_write(frame, sizeof(frame));
 }
 
 static bool chooseNextJob(uint8_t& zoneOut, MeterMode& modeOut) {
@@ -305,11 +300,8 @@ static bool saveCalDate(uint8_t zone, const char* paramKey, const char* date) {
 
 bool sensorYieryi_begin() {
     loadConfig();
-    rs485Serial.begin(YIERYI_BAUD, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
-    rs485Serial.setPins(-1, -1, -1, PIN_RS485_EN);
-    rs485Serial.setMode(UART_MODE_RS485_HALF_DUPLEX);
     nextPollMs = millis() + 1000UL;
-    Serial.println("[YIERYI] RS485 Modbus init 9600 8N1");
+    Serial.println("[YIERYI] Modbus driver ready (UART via rs485_mux)");
     return true;
 }
 
