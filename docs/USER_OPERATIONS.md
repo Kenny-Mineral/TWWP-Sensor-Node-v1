@@ -151,20 +151,12 @@ md5sum .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin
 
 ```bash
 scp .pio/build/waveshare-esp32-s3-rs485-can/firmware.bin \
-  kenny@100.67.244.37:/home/kenny/projects/twwp-monitoring/firmware/firmware.bin
+  kenny@100.67.244.37:/var/www/twwp/firmware/firmware.bin
 ```
 
-Then copy it into the nginx-served directory (kenny cannot sudo directly — use Docker):
+Password: see `~/.twwp/INFRASTRUCTURE.md` (kenny SSH password via Tailscale).
 
-```bash
-ssh kenny@100.67.244.37 \
-  "docker run --rm \
-    -v /var/www/twwp/firmware:/dst \
-    -v /home/kenny/projects/twwp-monitoring/firmware/firmware.bin:/src/firmware.bin:ro \
-    alpine sh -c 'cp /src/firmware.bin /dst/firmware.bin && chmod 644 /dst/firmware.bin'"
-```
-
-The nginx container serves `https://twwp-iot.duckdns.org/firmware/firmware.bin` from `/var/www/twwp/firmware/` (host path, mounted read-only into the `proxy` container). Port 443 must be open in the Hetzner cloud firewall — it was added 2026-05-12.
+The nginx container serves `https://twwp-iot.duckdns.org/firmware/firmware.bin` from `/var/www/twwp/firmware/` on the host. Directory is owned by kenny — no sudo or Docker workaround needed.
 
 The firmware host can be:
 
