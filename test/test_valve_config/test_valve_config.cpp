@@ -14,6 +14,13 @@ bool storeSd_logEvent(const char* msg) {
     strncpy(g_lastLogEvent, msg, sizeof(g_lastLogEvent) - 1);
     return true;
 }
+static JsonDocument g_fakeNodeJson;
+static bool         g_sdJsonAvail = false;
+bool storeSd_readJsonFile(const char*, JsonDocument& doc) {
+    if (!g_sdJsonAvail) return false;
+    doc = g_fakeNodeJson;
+    return true;
+}
 
 #include "net_mqtt.h"
 static char g_lastAlertPayload[512] = "";
@@ -76,6 +83,8 @@ static void resetAll() {
     g_lastAlertPayload[0] = '\0';
     g_lastAlertTopic[0]   = '\0';
     g_nvsStore.clear();
+    g_sdJsonAvail = false;
+    g_fakeNodeJson.clear();
     actuatorValve_begin();
 }
 
@@ -288,6 +297,84 @@ void test_safety_close_leaves_auto_on_when_flag_not_set() {
     TEST_ASSERT_TRUE(actuatorValve_isAuto());
 }
 
+// ── Task 6: Boot loading from node.json + NVS overlay ────────────────────────
+
+void test_load_config_reads_valve_block_from_sd() {
+    g_sdJsonAvail = true;
+    g_fakeNodeJson["valve"]["valve_type"]           = "solenoid";
+    g_fakeNodeJson["valve"]["trigger_source"]       = "manual";
+    g_fakeNodeJson["valve"]["idle_timeout_s"]       = 120;
+    g_fakeNodeJson["valve"]["max_open_s"]           = 300;
+    g_fakeNodeJson["valve"]["timeout_disable_auto"] = true;
+    g_fakeNodeJson["valve"]["timeout_alert"]        = false;
+
+    actuatorValve_loadConfig();
+
+    TEST_ASSERT_EQUAL_STRING("solenoid", actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("manual",   actuatorValve_getTriggerSource());
+    TEST_ASSERT_EQUAL_UINT32(120,        actuatorValve_getIdleTimeoutS());
+    TEST_ASSERT_EQUAL_UINT32(300,        actuatorValve_getMaxOpenS());
+    TEST_ASSERT_TRUE(actuatorValve_getTimeoutDisableAuto());
+    TEST_ASSERT_FALSE(actuatorValve_getTimeoutAlert());
+}
+
+void test_load_config_nvs_overlays_sd() {
+    g_sdJsonAvail = true;
+    g_fakeNodeJson["valve"]["valve_type"]     = "solenoid";
+    g_fakeNodeJson["valve"]["trigger_source"] = "flow";
+
+    // NVS overrides valve_type
+    g_nvsStore["valve/valve_type"] = "ball_valve";
+
+    actuatorValve_loadConfig();
+
+    TEST_ASSERT_EQUAL_STRING("ball_valve", actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("flow",       actuatorValve_getTriggerSource());
+}
+
+void test_load_config_sd_absent_uses_defaults() {
+    g_sdJsonAvail = false;
+    actuatorValve_loadConfig();
+    TEST_ASSERT_EQUAL_STRING("test", actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("flow", actuatorValve_getTriggerSource());
+    TEST_ASSERT_EQUAL_UINT32(0,      actuatorValve_getIdleTimeoutS());
+}
+
+// ── Task 7: NVS persistence ───────────────────────────────────────────────────
+
+void test_save_nvs_persists_valve_type() {
+    actuatorValve_setValveType("solenoid");
+    actuatorValve_saveToNvs();
+
+    // Simulate reboot: reset, reload from NVS (SD absent)
+    g_sdJsonAvail = false;
+    actuatorValve_begin();
+    actuatorValve_loadConfig();
+
+    TEST_ASSERT_EQUAL_STRING("solenoid", actuatorValve_getValveType());
+}
+
+void test_save_nvs_persists_all_fields() {
+    actuatorValve_setValveType("solenoid");
+    actuatorValve_setTriggerSource("manual");
+    actuatorValve_setIdleTimeoutS(180);
+    actuatorValve_setMaxOpenS(900);
+    actuatorValve_setTimeoutDisableAuto(true);
+    actuatorValve_setTimeoutAlert(false);
+    actuatorValve_saveToNvs();
+
+    g_sdJsonAvail = false;
+    actuatorValve_begin();
+    actuatorValve_loadConfig();
+
+    TEST_ASSERT_EQUAL_STRING("solenoid", actuatorValve_getValveType());
+    TEST_ASSERT_EQUAL_STRING("manual",   actuatorValve_getTriggerSource());
+    TEST_ASSERT_EQUAL_UINT32(180,        actuatorValve_getIdleTimeoutS());
+    TEST_ASSERT_EQUAL_UINT32(900,        actuatorValve_getMaxOpenS());
+    TEST_ASSERT_TRUE(actuatorValve_getTimeoutDisableAuto());
+    TEST_ASSERT_FALSE(actuatorValve_getTimeoutAlert());
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_defaults_after_begin);
@@ -310,5 +397,12 @@ int main(int, char**) {
     RUN_TEST(test_safety_close_no_alert_when_disabled);
     RUN_TEST(test_safety_close_disables_auto_when_flag_set);
     RUN_TEST(test_safety_close_leaves_auto_on_when_flag_not_set);
+    // Task 6: Boot loading
+    RUN_TEST(test_load_config_reads_valve_block_from_sd);
+    RUN_TEST(test_load_config_nvs_overlays_sd);
+    RUN_TEST(test_load_config_sd_absent_uses_defaults);
+    // Task 7: NVS persistence
+    RUN_TEST(test_save_nvs_persists_valve_type);
+    RUN_TEST(test_save_nvs_persists_all_fields);
     return UNITY_END();
 }

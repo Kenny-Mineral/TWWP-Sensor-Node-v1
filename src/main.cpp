@@ -220,6 +220,12 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
 
     doc["valve_open"] = actuatorValve_isOpen();
     doc["valve_auto"] = actuatorValve_isAuto();
+    doc["valve_type"]                 = actuatorValve_getValveType();
+    doc["trigger_source"]             = actuatorValve_getTriggerSource();
+    doc["valve_idle_timeout_s"]       = actuatorValve_getIdleTimeoutS();
+    doc["valve_max_open_s"]           = actuatorValve_getMaxOpenS();
+    doc["valve_timeout_disable_auto"] = actuatorValve_getTimeoutDisableAuto();
+    doc["valve_timeout_alert"]        = actuatorValve_getTimeoutAlert();
 
     addWaterQualityStatus(doc, YIERYI_ZONE_PRE_RO, "pre_ro");
     addWaterQualityStatus(doc, YIERYI_ZONE_POST_RO, "post_ro");
@@ -1213,6 +1219,126 @@ static bool publishHaDiscoveryValve() {
     return ok;
 }
 
+static bool publishHaDiscoveryValveConfig() {
+    bool ok = true;
+
+    // 2 × select: valve_type, trigger_source
+    struct { const char* uid; const char* name; const char* valueKey; const char* cmdKey;
+             const char* opt0; const char* opt1; const char* opt2; } selects[] = {
+        { "twwp_" NODE_ID "_valve_type", "Valve Type",
+          "valve_type", "set_valve_type",
+          "test", "solenoid", "ball_valve" },
+        { "twwp_" NODE_ID "_trigger_source", "Valve Trigger Source",
+          "trigger_source", "set_trigger_source",
+          "flow", "manual", nullptr },
+    };
+    for (auto& s : selects) {
+        JsonDocument doc;
+        doc["name"]             = s.name;
+        doc["unique_id"]        = s.uid;
+        doc["object_id"]        = s.uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", s.valueKey);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char cmdTmpl[80];
+        snprintf(cmdTmpl, sizeof(cmdTmpl), "{\"%s\": \"{{ value }}\"}", s.cmdKey);
+        doc["command_template"] = cmdTmpl;
+        JsonArray opts = doc["options"].to<JsonArray>();
+        opts.add(s.opt0); opts.add(s.opt1);
+        if (s.opt2) opts.add(s.opt2);
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/select/%s/config", s.uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    }
+
+    // 2 × number: idle_timeout_s, max_open_s
+    struct { const char* uid; const char* name; const char* valueKey; const char* cmdKey; } nums[] = {
+        { "twwp_" NODE_ID "_valve_idle_timeout", "Valve Idle Timeout",
+          "valve_idle_timeout_s", "set_valve_idle_timeout" },
+        { "twwp_" NODE_ID "_valve_max_open", "Valve Max Open Time",
+          "valve_max_open_s", "set_valve_max_open" },
+    };
+    for (auto& n : nums) {
+        JsonDocument doc;
+        doc["name"]             = n.name;
+        doc["unique_id"]        = n.uid;
+        doc["object_id"]        = n.uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", n.valueKey);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char cmdTmpl[80];
+        snprintf(cmdTmpl, sizeof(cmdTmpl), "{\"%s\": {{ value | int }}}", n.cmdKey);
+        doc["command_template"] = cmdTmpl;
+        doc["unit_of_measurement"] = "s";
+        doc["min"]  = 0;
+        doc["max"]  = 3600;
+        doc["step"] = 1;
+        doc["mode"] = "box";
+        doc["icon"] = "mdi:timer-outline";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", n.uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    }
+
+    // 2 × switch: timeout_disable_auto, timeout_alert
+    struct { const char* uid; const char* name; const char* valueKey;
+             const char* payloadOn; const char* payloadOff; } switches[] = {
+        { "twwp_" NODE_ID "_valve_timeout_disable_auto", "Timeout Disables Auto",
+          "valve_timeout_disable_auto",
+          "{\"set_valve_timeout_disable_auto\": true}",
+          "{\"set_valve_timeout_disable_auto\": false}" },
+        { "twwp_" NODE_ID "_valve_timeout_alert", "Timeout Publishes Alert",
+          "valve_timeout_alert",
+          "{\"set_valve_timeout_alert\": true}",
+          "{\"set_valve_timeout_alert\": false}" },
+    };
+    for (auto& sw : switches) {
+        JsonDocument doc;
+        doc["name"]             = sw.name;
+        doc["unique_id"]        = sw.uid;
+        doc["object_id"]        = sw.uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[96];
+        snprintf(tmpl, sizeof(tmpl), "{{ 'ON' if value_json.%s else 'OFF' }}", sw.valueKey);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        doc["payload_on"]       = sw.payloadOn;
+        doc["payload_off"]      = sw.payloadOff;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", sw.uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    }
+
+    Serial.print("[MQTT] HA valve config discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static bool publishHaDiscoveryEfficiency() {
     bool ok = true;
 
@@ -1413,6 +1539,7 @@ static void publishOnlineState() {
     publishHaDiscoveryEfficiency();
     publishHaDiscoveryVoltage();
     publishHaDiscoveryValve();
+    publishHaDiscoveryValveConfig();
     publishHaDiscoveryWaterQuality();
     publishHaDiscoveryTdsMeter();
     publishM0Status(true, false);
@@ -1565,6 +1692,30 @@ static void handleCmd(const char* payload) {
     if (!doc["valve_auto"].isNull()) {
         actuatorValve_setAuto(doc["valve_auto"].as<bool>());
     }
+    if (!doc["set_valve_type"].isNull()) {
+        actuatorValve_setValveType(doc["set_valve_type"].as<const char*>());
+        actuatorValve_saveToNvs();
+    }
+    if (!doc["set_trigger_source"].isNull()) {
+        actuatorValve_setTriggerSource(doc["set_trigger_source"].as<const char*>());
+        actuatorValve_saveToNvs();
+    }
+    if (!doc["set_valve_idle_timeout"].isNull()) {
+        actuatorValve_setIdleTimeoutS(doc["set_valve_idle_timeout"].as<uint32_t>());
+        actuatorValve_saveToNvs();
+    }
+    if (!doc["set_valve_max_open"].isNull()) {
+        actuatorValve_setMaxOpenS(doc["set_valve_max_open"].as<uint32_t>());
+        actuatorValve_saveToNvs();
+    }
+    if (!doc["set_valve_timeout_disable_auto"].isNull()) {
+        actuatorValve_setTimeoutDisableAuto(doc["set_valve_timeout_disable_auto"].as<bool>());
+        actuatorValve_saveToNvs();
+    }
+    if (!doc["set_valve_timeout_alert"].isNull()) {
+        actuatorValve_setTimeoutAlert(doc["set_valve_timeout_alert"].as<bool>());
+        actuatorValve_saveToNvs();
+    }
 }
 
 static const char* DATA_LOG_HEADER =
@@ -1669,6 +1820,7 @@ void setup() {
     sensorPressure_begin();
     sensorTemp_begin();
     actuatorValve_begin();
+    actuatorValve_loadConfig();
 
     netWifi_begin();
     watchdog_begin();

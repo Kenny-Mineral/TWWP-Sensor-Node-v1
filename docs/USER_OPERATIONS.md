@@ -740,6 +740,95 @@ GPIO8 is driven `HIGH` (relay off) as the very first action in `actuatorValve_be
 
 ---
 
+## Valve Configuration
+
+All six valve config fields are readable in `twwp/<id>/status` and writable via MQTT cmd or HA entity. All writes are persisted to NVS and survive reboots. Defaults can be set in `node.json` under the `"valve"` key.
+
+### Valve type
+
+Controls the hardware wiring model. Current bench setup is `test` (relay driving an LED).
+
+```bash
+mosquitto_pub --capath /etc/ssl/certs -h twwp-iot.duckdns.org -p 8883 \
+  -u twwp_wh_001 -P <MQTT_PASS> \
+  -t 'twwp/wh_001/cmd' -m '{"set_valve_type": "solenoid"}'
+```
+
+| Value | Meaning |
+|---|---|
+| `test` | Relay + LED indicator (current bench setup) |
+| `solenoid` | Production solenoid — sustained energise to hold open |
+| `ball_valve` | Not yet implemented — logs warning, falls back to solenoid behaviour |
+
+### Trigger source
+
+Controls what automatically opens/closes the valve.
+
+```bash
+mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"set_trigger_source": "manual"}'
+```
+
+| Value | Meaning |
+|---|---|
+| `flow` | Open when `flow_rate_1 > 0.05 L/min` (default) |
+| `manual` | Loop does nothing; valve only responds to `valve_open` cmd |
+
+### Safety timers
+
+Two independent timers, both default to 0 (disabled). Either or both can be active simultaneously.
+
+**Idle timeout** — safety-closes the valve when it has been open with no flow for N seconds:
+
+```bash
+mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"set_valve_idle_timeout": 300}'
+```
+
+**Max-open timeout** — safety-closes the valve N seconds after it was opened, regardless of flow:
+
+```bash
+mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"set_valve_max_open": 600}'
+```
+
+Set either to `0` to disable.
+
+### Safety close behaviour
+
+When a safety timer fires, the valve closes. Two optional follow-on actions:
+
+```bash
+# Also disable auto mode — prevents auto-reopen until manually re-enabled
+mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"set_valve_timeout_disable_auto": true}'
+
+# Publish an alert to twwp/wh_001/alert
+mosquitto_pub ... -t 'twwp/wh_001/cmd' -m '{"set_valve_timeout_alert": true}'
+```
+
+The SD log always records a safety close event regardless of these flags.
+
+Alert payload:
+```json
+{"type": "VALVE_SAFETY_CLOSE", "reason": "idle_timeout", "timeout_s": 300}
+```
+
+### node.json defaults
+
+Add a `"valve"` block to `/config/node.json` to set boot-time defaults (NVS values overlay these):
+
+```json
+{
+  "valve": {
+    "valve_type":           "test",
+    "trigger_source":       "flow",
+    "idle_timeout_s":       0,
+    "max_open_s":           0,
+    "timeout_disable_auto": false,
+    "timeout_alert":        true
+  }
+}
+```
+
+---
+
 ## Flow Reset Commands
 
 Reset commands are available via MQTT (`twwp/<node_id>/cmd`), HA device card buttons, and serial console.

@@ -131,6 +131,12 @@ Binary sensor reporting the relay state (open = energised = LED/valve on).
 | Topic | Entity type | Notes |
 |---|---|---|
 | `homeassistant/binary_sensor/twwp_<id>_valve_open/config` | binary_sensor | device_class=opening. `ON` when relay energised (valve open). |
+| `homeassistant/select/twwp_<id>_valve_type/config` | select | Valve hardware type: `test` / `solenoid` / `ball_valve`. |
+| `homeassistant/select/twwp_<id>_trigger_source/config` | select | What opens the valve: `flow` / `manual`. |
+| `homeassistant/number/twwp_<id>_valve_idle_timeout/config` | number | Idle safety timeout in seconds (0 = off). |
+| `homeassistant/number/twwp_<id>_valve_max_open/config` | number | Max-open safety timeout in seconds (0 = off). |
+| `homeassistant/switch/twwp_<id>_valve_timeout_disable_auto/config` | switch | Disable auto mode after safety close. |
+| `homeassistant/switch/twwp_<id>_valve_timeout_alert/config` | switch | Publish alert on safety close. |
 
 Status fields added to `twwp/<id>/status`:
 
@@ -138,6 +144,12 @@ Status fields added to `twwp/<id>/status`:
 |---|---|---|
 | `valve_open` | bool | `true` = relay energised (valve open / LED on) |
 | `valve_auto` | bool | `true` = flow-driven auto mode; `false` = manual MQTT override |
+| `valve_type` | string | Active hardware type (`test` / `solenoid` / `ball_valve`) |
+| `trigger_source` | string | Active trigger source (`flow` / `manual`) |
+| `valve_idle_timeout_s` | int | Idle safety timeout in seconds (0 = disabled) |
+| `valve_max_open_s` | int | Max-open safety timeout in seconds (0 = disabled) |
+| `valve_timeout_disable_auto` | bool | Whether safety close also disables auto mode |
+| `valve_timeout_alert` | bool | Whether safety close publishes an alert |
 
 ---
 
@@ -261,6 +273,12 @@ The node subscribes to `twwp/<id>/cmd`. Payload must be valid JSON. Supported ke
 | `set_voltage_cal` | float (0.8–1.2) | Set voltage calibration multiplier. Persisted to NVS. |
 | `valve_open` | bool | Open (`true`) or close (`false`) relay. Disables auto mode. |
 | `valve_auto` | bool | Re-enable (`true`) or disable (`false`) flow-driven auto mode. |
+| `set_valve_type` | string | Set valve hardware type (`test`/`solenoid`/`ball_valve`). Persisted to NVS. |
+| `set_trigger_source` | string | Set trigger source (`flow`/`manual`). Persisted to NVS. |
+| `set_valve_idle_timeout` | int (0–3600) | Safety close N seconds after last flow while open. 0 = disabled. Persisted. |
+| `set_valve_max_open` | int (0–3600) | Safety close N seconds after valve opened. 0 = disabled. Persisted. |
+| `set_valve_timeout_disable_auto` | bool | If true, disable auto mode when safety close fires. Persisted. |
+| `set_valve_timeout_alert` | bool | If true, publish to `twwp/<id>/alert` when safety close fires. Persisted. |
 | `restart_wifi` | bool | Trigger WiFi reconnect. |
 | `ota_url` | string | Start HTTPS OTA update from the given firmware URL. |
 | `ota_md5` | string | Optional expected MD5 hash for the firmware image. Used only with `ota_url`. |

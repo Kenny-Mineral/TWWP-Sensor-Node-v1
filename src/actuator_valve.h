@@ -21,3 +21,6 @@ uint32_t    actuatorValve_getIdleTimeoutS();
 uint32_t    actuatorValve_getMaxOpenS();
 bool        actuatorValve_getTimeoutDisableAuto();
 bool        actuatorValve_getTimeoutAlert();
+
+void actuatorValve_loadConfig();
+void actuatorValve_saveToNvs();

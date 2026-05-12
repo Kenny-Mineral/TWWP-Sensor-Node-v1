@@ -3,6 +3,7 @@
 #include "config.h"
 #include "sensor_flow.h"
 #include <string.h>
+#include <ArduinoJson.h>
 #ifndef UNIT_TEST
 #include <Preferences.h>
 #include "store_sd.h"
@@ -137,6 +138,59 @@ static void runSafetyTimers() {
             storeSd_logEvent(log);
         }
     }
+}
+
+void actuatorValve_loadConfig() {
+    // Layer 1: node.json defaults
+    JsonDocument doc;
+    if (storeSd_readJsonFile(SD_CONFIG_PATH, doc)) {
+        JsonObjectConst v = doc["valve"].as<JsonObjectConst>();
+        if (!v["valve_type"].isNull())
+            actuatorValve_setValveType(v["valve_type"].as<const char*>());
+        if (!v["trigger_source"].isNull())
+            actuatorValve_setTriggerSource(v["trigger_source"].as<const char*>());
+        if (!v["idle_timeout_s"].isNull())
+            actuatorValve_setIdleTimeoutS(v["idle_timeout_s"].as<uint32_t>());
+        if (!v["max_open_s"].isNull())
+            actuatorValve_setMaxOpenS(v["max_open_s"].as<uint32_t>());
+        if (!v["timeout_disable_auto"].isNull())
+            actuatorValve_setTimeoutDisableAuto(v["timeout_disable_auto"].as<bool>());
+        if (!v["timeout_alert"].isNull())
+            actuatorValve_setTimeoutAlert(v["timeout_alert"].as<bool>());
+    }
+
+    // Layer 2: NVS overlay (MQTT writes survive reboots without touching SD)
+    Preferences prefs;
+    prefs.begin("valve", true);
+    if (prefs.isKey("valve_type"))
+        actuatorValve_setValveType(prefs.getString("valve_type", _valveType).c_str());
+    if (prefs.isKey("trigger_src"))
+        actuatorValve_setTriggerSource(prefs.getString("trigger_src", _triggerSource).c_str());
+    if (prefs.isKey("idle_timeout"))
+        actuatorValve_setIdleTimeoutS(prefs.getUInt("idle_timeout", _idleTimeoutS));
+    if (prefs.isKey("max_open"))
+        actuatorValve_setMaxOpenS(prefs.getUInt("max_open", _maxOpenS));
+    if (prefs.isKey("dis_auto"))
+        actuatorValve_setTimeoutDisableAuto(prefs.getBool("dis_auto", _timeoutDisableAuto));
+    if (prefs.isKey("alert"))
+        actuatorValve_setTimeoutAlert(prefs.getBool("alert", _timeoutAlert));
+    prefs.end();
+
+    Serial.printf("[VALVE] config: type=%s trigger=%s idle=%lus max=%lus\n",
+        _valveType, _triggerSource,
+        (unsigned long)_idleTimeoutS, (unsigned long)_maxOpenS);
+}
+
+void actuatorValve_saveToNvs() {
+    Preferences prefs;
+    prefs.begin("valve", false);
+    prefs.putString("valve_type",  _valveType);
+    prefs.putString("trigger_src", _triggerSource);
+    prefs.putUInt("idle_timeout",  _idleTimeoutS);
+    prefs.putUInt("max_open",      _maxOpenS);
+    prefs.putBool("dis_auto",      _timeoutDisableAuto);
+    prefs.putBool("alert",         _timeoutAlert);
+    prefs.end();
 }
 
 void actuatorValve_loop() {
