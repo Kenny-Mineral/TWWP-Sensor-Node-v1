@@ -1,7 +1,7 @@
 # Pin Allocation — Waveshare ESP32-S3-RS485-CAN
 
-**Last updated:** 2026-04-27
-**Version:** v3 — confirmed against SpotPear/Waveshare pinout image and Waveshare demo source code.
+**Last updated:** 2026-05-15
+**Version:** v4 — OLED moved to main Wire bus (GPIO9/GPIO3); GPIO1/GPIO2 SH1.0 free.
 **Source of truth in code:** `include/pins.h`. Update both together — never one alone.
 
 ---
@@ -72,24 +72,22 @@
 | **Leak DO** | 6 | INPUT | PULLUP | — | 3V3 | MH-RD comparator out, LOW = wet |
 | **Pressure ADC** | 7 | INPUT | — | ADC1_CH6 | 5V | 0–5V → 2:1 divider → 0–2.5V |
 | **Valve relay output** | 8 | OUTPUT | — | — | 5V (relay VCC) | Active-low relay module IN1. LOW=open. Current load: 12V LED; future: ball valve. |
-| **I²C SDA (DS3231)** | 9 | open-drain | 4.7kΩ on module | — | 3V3 | DS3231 @ 0x68, EEPROM @ 0x57 |
-| **DS18B20 1-Wire** | 10 | bidir | 4.7kΩ to 3V3 | — | 3V3 | 3-wire mode |
+| **I²C SDA (DS3231 + OLED)** | 9 | open-drain | 4.7kΩ on module | — | 3V3 | DS3231 @ 0x68, EEPROM @ 0x57, SSD1306 OLED @ 0x3C — shared Wire bus, no address conflict |
+| **OLED button** | 10 | INPUT | PULLUP | — | 3V3 | Tactile button, LOW=pressed — cycles display frame |
 | **SPI MOSI (SD)** | 11 | OUTPUT | — | — | 3V3 | SPI2/FSPI |
 | **SPI SCK (SD)** | 12 | OUTPUT | — | — | 3V3 | |
 | **SPI MISO (SD)** | 13 | INPUT | — | — | 3V3 | |
 | **SPI CS (SD)** | 14 | OUTPUT | — | — | 3V3 | Software CS |
-| **I²C SCL (DS3231)** | 3 | open-drain | 4.7kΩ on module | — | 3V3 | Strapping pin — OK as driven I²C clock |
+| **I²C SCL (DS3231 + OLED)** | 3 | open-drain | 4.7kΩ on module | — | 3V3 | Strapping pin — OK as driven I²C clock. Shared with OLED SSD1306. |
 | **Status LED** | 48 | WS2812 data | — | — | 3V3 | Onboard RGB, FastLED |
-| **Leak AO (optional)** | 2 | INPUT | — | ADC1_CH1 | 3V3 | SH1.0 socket |
-| **Spare / RTC SQW** | 1 | INPUT | — | ADC1_CH0 | 3V3 | SH1.0 socket |
 
 ---
 
-## E. Free pins after Phase 1
+## E. Free pins after Phase 1 + OLED
 
 All IO3–IO14 on the 2×12 header are allocated.
-SH1.0 free: GPIO1 (spare/RTC SQW), GPIO2 (leak AO optional).
-Off-header for future: GPIO33–37, GPIO40–42. (GPIO47 reserved onboard.)
+SH1.0 sockets (GPIO1, GPIO2) are **free** — OLED moved to main Wire bus (GPIO9/GPIO3).
+Off-header for future: GPIO1, GPIO2 (SH1.0), GPIO33–37, GPIO40–42. (GPIO47 reserved onboard.)
 
 ---
 

@@ -55,6 +55,67 @@ Expected healthy boot signs:
 
 If you see `[VOLTAGE] ADS1115 not found` instead, check that the ADS1115 is wired to GPIO9 (SDA) / GPIO3 (SCL) and that the ADDR pin is tied to GND (I²C address 0x48).
 
+If you see `[OLED] SSD1306 not found at 0x3C` instead of `[OLED] ready`, check that the display VCC/GND are wired to the internal header 3V3/GND pins, and that SDA/SCL are on GPIO9/GPIO3.
+
+## OLED Status Display
+
+The node drives a 0.96" SSD1306 128×64 I²C OLED mounted on the enclosure. It shows a 7-frame sliding carousel cycling every 5 seconds, with a persistent header overlay at the top.
+
+### Wiring
+
+| OLED pin | Board connection |
+|---|---|
+| VCC | 3V3 on internal 2×12 header (requires enclosure open) |
+| GND | GND on internal 2×12 header |
+| SDA | GPIO9 — shared Wire bus with DS3231 and ADS1115 |
+| SCL | GPIO3 — shared Wire bus with DS3231 and ADS1115 |
+
+The SH1.0 side sockets (GPIO1/GPIO2) are **not** used for the OLED — they carry no power rail.
+
+Button: tactile button, one leg to GPIO10, other leg to GND. Active-low (INPUT_PULLUP).
+
+### Header (always visible — top 12 px)
+
+```
+0.0L          TWWP           WM
+```
+
+| Section | Meaning |
+|---|---|
+| Left — `x.xL` | Today's purified output volume (flow sensor 1, resets at midnight) |
+| Centre — `TWWP` | Normal. Flashes `!LEAK!` at 1 Hz when leak sensor is wet. |
+| Right — status flags | `W` = WiFi connected, `!` = WiFi lost. `M` = MQTT connected, `!` = MQTT lost. `B` = SD offline buffer has unsent messages. |
+
+### Slides (cycle every 5 seconds)
+
+| Frame | Title | Data shown |
+|---|---|---|
+| 1 | PRE-RO | TDS (ppm hero), EC, temp from TDS meter probe 1. pH/ORP show `--` (no Yieryi on this zone). |
+| 2 | POST-RO | TDS (ppm hero), EC, temp from TDS meter probe 2. Rejection % calculated from pre/post TDS. pH/ORP show `--`. |
+| 3 | REMIN | Full Yieryi meter readings — pH, ORP, TDS (ppm hero), EC, temp. |
+| 4 | FLOW & WASTE | Live flow rates for both sensors (L/min), waste ratio. |
+| 5 | STORAGE TANK | Estimated tank level (bar + %, litres, ETA to full). Level calculated from flow differential; override with `displayOled_setTankLiters()` when a level sensor is wired. |
+| 6 | FILTER HEALTH | Stub — empty progress bars. Implement once cumulative filter-volume tracking is added. |
+| 7 | Branding | TWWP logo + "Wholey Water Project". |
+
+### Button
+
+Press the tactile button (GPIO10) to immediately advance to the next frame. Debounce: 200 ms.
+
+### Tank level calculation
+
+In the absence of a physical level sensor, the firmware estimates tank fill from the flow differential:
+
+```
+tank += feed_lpm × dt × 0.20  (RO recovery ratio — 20% of feed becomes pure water)
+tank -= dispense_lpm × dt
+tank = clamp(tank, 0, 20 L)
+```
+
+Tank level is saved to NVS (namespace `oled`, key `tank_l`) every 60 seconds and restored on reboot. To override with a real sensor reading, call `displayOled_setTankLiters(float l)` from any driver.
+
+---
+
 ## SD Serial Commands
 
 Open the serial monitor:

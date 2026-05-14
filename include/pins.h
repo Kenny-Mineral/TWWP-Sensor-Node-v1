@@ -14,9 +14,13 @@
 #define PIN_FLOW_1       4   // USN-HS06PE — purified output, INPUT_PULLUP, interrupt FALLING
 #define PIN_FLOW_2       5   // USN-HS06PS — raw input,      INPUT_PULLUP, interrupt FALLING
 
-// M2 — Pressure + temp (stub)
+// M2 — Pressure (stub)
 #define PIN_PRESSURE     7   // Analog ADC, 0–5V via 2:1 divider → 0–2.5V
-#define PIN_TEMP_1WIRE  10   // DS18B20 OneWire
+
+// Display — SSD1306 OLED on main Wire bus (shared with DS3231, no address conflict)
+#define PIN_OLED_SDA     PIN_I2C_SDA   // GPIO9
+#define PIN_OLED_SCL     PIN_I2C_SCL   // GPIO3
+#define PIN_OLED_BTN    10   // Tactile button INPUT_PULLUP, LOW=pressed — cycles display frame
 
 // M3 — Valve relay
 #define PIN_VALVE        8   // Relay output — active-low (LOW=open). Current load: 12V LED / future ball valve.

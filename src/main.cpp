@@ -23,6 +23,7 @@
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
 #include "actuator_valve.h"
+#include "display_oled.h"
 
 #ifndef NODE_FIRMWARE_VERSION
 #define NODE_FIRMWARE_VERSION "0.0.0"
@@ -1819,6 +1820,7 @@ void setup() {
     sensorTdsMeter_begin();
     sensorPressure_begin();
     sensorTemp_begin();
+    displayOled_begin();
     actuatorValve_begin();
     actuatorValve_loadConfig();
 
@@ -1849,6 +1851,7 @@ void loop() {
     sensorTdsMeter_loop();
     sensorPressure_loop();
     sensorTemp_loop();
+    displayOled_loop();
     actuatorValve_loop();
 
     netWifi_loop();
