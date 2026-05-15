@@ -59,7 +59,7 @@ If you see `[OLED] SSD1306 not found at 0x3C` instead of `[OLED] ready`, check t
 
 ## OLED Status Display
 
-The node drives a 0.96" SSD1306 128×64 I²C OLED mounted on the enclosure. It shows a 7-frame sliding carousel cycling every 5 seconds, with a persistent header overlay at the top.
+The node drives a 0.96" SSD1306 128×64 I²C OLED mounted on the enclosure. It shows a 6-frame sliding carousel cycling every 5 seconds, with a persistent header overlay at the top.
 
 ### Wiring
 
@@ -77,12 +77,12 @@ Button: tactile button, one leg to GPIO10, other leg to GND. Active-low (INPUT_P
 ### Header (always visible — top 12 px)
 
 ```
-0.0L          TWWP           WM
+10:34 2.3L     TWWP           WM
 ```
 
 | Section | Meaning |
 |---|---|
-| Left — `x.xL` | Today's purified output volume (flow sensor 1, resets at midnight) |
+| Left — `HH:MM x.xL` | Current RTC time (24h) + live session volume from output sensor. Volume counts up while a tap session is active; resets to 0.0 L between sessions. |
 | Centre — `TWWP` | Normal. Flashes `!LEAK!` at 1 Hz when leak sensor is wet. |
 | Right — status flags | `W` = WiFi connected, `!` = WiFi lost. `M` = MQTT connected, `!` = MQTT lost. `B` = SD offline buffer has unsent messages. |
 
@@ -90,13 +90,26 @@ Button: tactile button, one leg to GPIO10, other leg to GND. Active-low (INPUT_P
 
 | Frame | Title | Data shown |
 |---|---|---|
-| 1 | PRE-RO | TDS (ppm hero), EC, temp from TDS meter probe 1. pH/ORP show `--` (no Yieryi on this zone). |
-| 2 | POST-RO | TDS (ppm hero), EC, temp from TDS meter probe 2. Rejection % calculated from pre/post TDS. pH/ORP show `--`. |
-| 3 | REMIN | Full Yieryi meter readings — pH, ORP, TDS (ppm hero), EC, temp. |
-| 4 | FLOW & WASTE | Live flow rates for both sensors (L/min), waste ratio. |
-| 5 | STORAGE TANK | Estimated tank level (bar + %, litres, ETA to full). Level calculated from flow differential; override with `displayOled_setTankLiters()` when a level sensor is wired. |
-| 6 | FILTER HEALTH | Stub — empty progress bars. Implement once cumulative filter-volume tracking is added. |
-| 7 | Branding | TWWP logo + "Wholey Water Project". |
+| 0 | WQ SUMMARY | All three filter positions: name, TDS ppm, status label. Pre-RO and Post-RO from TDS meter probes; Remin from Yieryi meter. Offline sensor shows `---`. Thresholds and labels configurable from HA. |
+| 1 | REMIN | Full Yieryi meter readings — pH, ORP, TDS (ppm hero), EC, temp. |
+| 2 | FLOW & WASTE | Live flow rates for both sensors (L/min), waste ratio. |
+| 3 | STORAGE TANK | Estimated tank level (bar + %, litres, ETA to full). Level calculated from flow differential; override with `displayOled_setTankLiters()` when a level sensor is wired. |
+| 4 | SYS HEALTH | Battery voltage/%, WiFi RSSI/signal%, uptime, SD offline buffer count. |
+| 5 | Branding | TWWP logo + "Wholey Water Project". |
+
+### Water quality thresholds (HA-configurable)
+
+All WQ Summary status thresholds, zone names, and status labels are configurable from the HA device card. Changes take effect immediately and survive reboots (stored in NVS). Defaults:
+
+| Entity | Default | Description |
+|---|---|---|
+| Pre-RO Max TDS | 110 ppm | Above this = WARN status |
+| Post-RO Good Max | 5 ppm | At or below = GOOD |
+| Post-RO Check Max | 8 ppm | Between good and this = CHECK; above = CHANGE |
+| Remin Min TDS | 15 ppm | Below this = LOW |
+| Remin Max TDS | 30 ppm | Above this = HIGH; within range = OK |
+| Zone names | PRE-RO / POST-RO / REMIN | Display label for each row (max 15 chars) |
+| Status labels | OK / WARN / GOOD / CHECK / CHANGE / LOW / HIGH | Display text for each status (max 15 chars) |
 
 ### Button
 

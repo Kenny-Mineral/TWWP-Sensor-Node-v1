@@ -39,6 +39,7 @@
 #define TOPIC_SESSION               "twwp/" NODE_ID "/session"
 #define TOPIC_SESSIONS_RECENT       "twwp/" NODE_ID "/sessions_recent"
 #define TOPIC_OTA_STATE             "twwp/" NODE_ID "/ota_state"
+#define TOPIC_WQ_CONFIG             "twwp/" NODE_ID "/wq_config"
 #define SD_SESSION_LOG_PATH         "/log/sessions.csv"
 #define SD_SESSIONS_RECENT_PATH     "/config/sessions_recent.json"
 #define SESSION_IDLE_TIMEOUT_MS     90000UL

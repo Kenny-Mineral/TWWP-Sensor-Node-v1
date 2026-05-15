@@ -11,6 +11,11 @@
 #include "net_wifi.h"
 #include "net_mqtt.h"
 #include "store_sd.h"
+#include "sensor_voltage.h"
+#include "time_rtc.h"
+#include "session_flow.h"
+#include "wq_config.h"
+#include <WiFi.h>
 
 // ── Config ─────────────────────────────────────────────────────────────────
 #define OLED_I2C_ADDR       0x3C
@@ -112,7 +117,10 @@ static void drawHeader(OLEDDisplay* d, OLEDDisplayUiState*) {
     d->setFont(ArialMT_Plain_10);
 
     d->setTextAlignment(TEXT_ALIGN_LEFT);
-    snprintf(buf, sizeof(buf), "%.1fL", sensorFlow_getTodayL(1));
+    String ts = timeRtc_getISOTimestamp();
+    float sesVol = sessionFlow_getCurrentVolumeOut();
+    snprintf(buf, sizeof(buf), "%c%c:%c%c %.1fL",
+             ts[11], ts[12], ts[14], ts[15], sesVol);
     d->drawString(0, 0, buf);
 
     d->setTextAlignment(TEXT_ALIGN_CENTER);
@@ -132,51 +140,19 @@ static void drawHeader(OLEDDisplay* d, OLEDDisplayUiState*) {
     d->drawHorizontalLine(0, HEADER_SEP_Y, 128);
 }
 
-// ── TDS-meter zone slide (Pre-RO / Post-RO — no Yieryi on those zones) ────
-// Shows TDS hero + EC + Temp from standalone meter; pH/ORP always "--"
-static void drawTdsMeterFrame(OLEDDisplay* d, int16_t x, int16_t y,
-                               uint8_t zone, const char* title, bool showRej) {
-    char buf[20];
-    bool online = sensorTdsMeter_isOnline(zone);
-
+// ── WQ Summary frame helper — one row: name left, ppm centre, status right ─
+static void drawWqRow(OLEDDisplay* d, int16_t x, int16_t rowY,
+                      const char* name, bool online, float tds, const char* status) {
+    char buf[12];
+    d->setFont(ArialMT_Plain_10);
     d->setTextAlignment(TEXT_ALIGN_LEFT);
-    d->setFont(ArialMT_Plain_10);
-    d->drawString(x, y + 14, title);
-
-    d->setFont(ArialMT_Plain_24);
-    if (!online) {
-        d->drawString(x, y + 24, "---");
-    } else {
-        snprintf(buf, sizeof(buf), "%d", (int)sensorTdsMeter_getTds(zone));
-        d->drawString(x, y + 24, buf);
-    }
-    d->setFont(ArialMT_Plain_10);
-    d->drawString(x + 50, y + 50, "ppm");
-
-    // Right column
-    d->drawString(x + 75, y + 14, "pH:--");
-    d->drawString(x + 75, y + 26, "ORP:--");
-    if (!online) {
-        d->drawString(x + 75, y + 38, "T:---");
-    } else {
-        snprintf(buf, sizeof(buf), "T:%.1fC", sensorTdsMeter_getTemp(zone));
-        d->drawString(x + 75, y + 38, buf);
-    }
-    if (showRej) {
-        float pre  = sensorTdsMeter_getTds(TDS_ZONE_PRE_RO);
-        float post = sensorTdsMeter_getTds(TDS_ZONE_POST_RO);
-        if (!sensorTdsMeter_isOnline(TDS_ZONE_PRE_RO) ||
-            !sensorTdsMeter_isOnline(TDS_ZONE_POST_RO) || pre < 1.0f) {
-            snprintf(buf, sizeof(buf), "Rej:---");
-        } else {
-            snprintf(buf, sizeof(buf), "Rej:%.0f%%",
-                     constrain((1.0f - post / pre) * 100.0f, 0.0f, 100.0f));
-        }
-    } else {
-        if (!online) snprintf(buf, sizeof(buf), "EC:---");
-        else snprintf(buf, sizeof(buf), "EC:%.0f", sensorTdsMeter_getEc(zone));
-    }
-    d->drawString(x + 75, y + 50, buf);
+    d->drawString(x, rowY, name);
+    d->setTextAlignment(TEXT_ALIGN_CENTER);
+    if (online) snprintf(buf, sizeof(buf), "%dppm", (int)tds);
+    else        strlcpy(buf, "---", sizeof(buf));
+    d->drawString(x + 64, rowY, buf);
+    d->setTextAlignment(TEXT_ALIGN_RIGHT);
+    d->drawString(x + 128, rowY, online ? status : "---");
 }
 
 // ── Zone slide helper ──────────────────────────────────────────────────────
@@ -218,17 +194,25 @@ static void drawZoneFrame(OLEDDisplay* d, int16_t x, int16_t y,
     d->drawString(x + 75, y + 50, buf);
 }
 
-// ── Frame 0: Pre-RO ────────────────────────────────────────────────────────
-static void framePreRO(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
-    drawTdsMeterFrame(d, x, y, TDS_ZONE_PRE_RO, "PRE-RO", false);
+// ── Frame 0: WQ Summary — all three positions on one slide ────────────────
+static void frameWqSummary(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
+    bool preOn  = sensorTdsMeter_isOnline(TDS_ZONE_PRE_RO);
+    float preTds = preOn ? sensorTdsMeter_getTds(TDS_ZONE_PRE_RO) : 0.0f;
+    drawWqRow(d, x, y + 14, wqConfig_getPreRoName(),  preOn,  preTds,
+              wqConfig_evalPreRo(preTds));
+
+    bool postOn  = sensorTdsMeter_isOnline(TDS_ZONE_POST_RO);
+    float postTds = postOn ? sensorTdsMeter_getTds(TDS_ZONE_POST_RO) : 0.0f;
+    drawWqRow(d, x, y + 31, wqConfig_getPostRoName(), postOn, postTds,
+              wqConfig_evalPostRo(postTds));
+
+    bool remOn  = sensorYieryi_isOnline(YIERYI_ZONE_REMIN);
+    float remTds = remOn ? sensorYieryi_getTdsPpm(YIERYI_ZONE_REMIN) : 0.0f;
+    drawWqRow(d, x, y + 48, wqConfig_getReminName(),  remOn,  remTds,
+              wqConfig_evalRemin(remTds));
 }
 
-// ── Frame 1: Post-RO ───────────────────────────────────────────────────────
-static void framePostRO(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
-    drawTdsMeterFrame(d, x, y, TDS_ZONE_POST_RO, "POST-RO", true);
-}
-
-// ── Frame 2: Remineralised ─────────────────────────────────────────────────
+// ── Frame 1: Remineralised ─────────────────────────────────────────────────
 static void frameRemin(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
     drawZoneFrame(d, x, y, YIERYI_ZONE_REMIN, "REMIN", false);
 }
@@ -296,17 +280,42 @@ static void frameTank(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y)
     d->drawString(x + 28, y + 54, buf);
 }
 
-// ── Frame 5: Filter health (stub — needs filter-volume accumulator) ─────────
-static void frameFilterHealth(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
-    // TODO: replace placeholder bars with real % once cumulative filter-volume
-    //       tracking is implemented (track total litres through each stage).
+// ── Frame 5: System health — battery, WiFi, uptime, offline buffer ─────────
+static void frameSystemHealth(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
+    char buf[22];
+
     d->setTextAlignment(TEXT_ALIGN_LEFT);
     d->setFont(ArialMT_Plain_10);
-    d->drawString(x, y + 14, "FILTER HEALTH");
-    d->drawString(x, y + 27, "Pre-filter");
-    d->drawRect(x, y + 37, 120, 7);
-    d->drawString(x, y + 47, "Membrane");
-    d->drawRect(x, y + 57, 120, 7);
+    d->drawString(x, y + 14, "SYS HEALTH");
+
+    // Battery — voltage, %, charge state
+    float v   = sensorVoltage_getVoltageV();
+    float pct = sensorVoltage_getPercentPct();
+    const char* st = sensorVoltage_getState();
+    const char* stAbbr = (st[0] == 'C') ? "CHG" : (st[0] == 'D') ? "DIS" : "OK";
+    snprintf(buf, sizeof(buf), "Bat:%.1fV %d%% %s", v, (int)pct, stAbbr);
+    d->drawString(x, y + 26, buf);
+
+    // WiFi — RSSI and signal %
+    if (netWifi_isConnected()) {
+        int rssi = WiFi.RSSI();
+        int sig  = constrain(2 * (rssi + 100), 0, 100);
+        snprintf(buf, sizeof(buf), "WiFi:%ddBm %d%%", rssi, sig);
+    } else {
+        snprintf(buf, sizeof(buf), "WiFi: OFFLINE");
+    }
+    d->drawString(x, y + 37, buf);
+
+    // Uptime + offline buffer count
+    uint32_t upSec = millis() / 1000;
+    uint32_t days  = upSec / 86400;
+    uint32_t hrs   = (upSec % 86400) / 3600;
+    uint32_t mins  = (upSec % 3600) / 60;
+    if (days > 0)
+        snprintf(buf, sizeof(buf), "Up:%dd%dh  Buf:%d", (int)days, (int)hrs, storeSd_bufferCount());
+    else
+        snprintf(buf, sizeof(buf), "Up:%dh%dm  Buf:%d", (int)hrs, (int)mins, storeSd_bufferCount());
+    d->drawString(x, y + 48, buf);
 }
 
 // ── Frame 6: Branding ──────────────────────────────────────────────────────
@@ -319,8 +328,8 @@ static void frameBranding(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_
 }
 
 // ── Frame / overlay registry ───────────────────────────────────────────────
-static FrameCallback   s_frames[]   = { framePreRO, framePostRO, frameRemin,
-                                         frameFlow, frameTank, frameFilterHealth,
+static FrameCallback   s_frames[]   = { frameWqSummary, frameRemin,
+                                         frameFlow, frameTank, frameSystemHealth,
                                          frameBranding };
 static OverlayCallback s_overlays[] = { drawHeader };
 
@@ -387,7 +396,7 @@ bool displayOled_begin() {
     s_ui.setFrameAnimation(SLIDE_LEFT);
     s_ui.setActiveSymbol(s_emptySymbol);    // hide page-indicator dots
     s_ui.setInactiveSymbol(s_emptySymbol);
-    s_ui.setFrames(s_frames, 7);
+    s_ui.setFrames(s_frames, 6);
     s_ui.setOverlays(s_overlays, 1);
     s_ui.init();
     s_disp.flipScreenVertically();

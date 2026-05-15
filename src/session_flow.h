@@ -31,3 +31,4 @@ float    sessionFlow_getLastVolumeOut();     // sensor 1 — RO purified output 
 float    sessionFlow_getLastVolumeIn();      // sensor 2 — RO total input (L)
 float    sessionFlow_getLastPeakOut();       // peak L/min on channel 1
 float    sessionFlow_getLastPeakIn();        // peak L/min on channel 2
+float    sessionFlow_getCurrentVolumeOut(); // live litres for active session; 0 when idle

@@ -388,3 +388,9 @@ float    sessionFlow_getLastVolumeOut()     { return lastSessionVolumeOut; }
 float    sessionFlow_getLastVolumeIn()      { return lastSessionVolumeIn; }
 float    sessionFlow_getLastPeakOut()       { return lastSessionPeakOut; }
 float    sessionFlow_getLastPeakIn()        { return lastSessionPeakIn; }
+
+float sessionFlow_getCurrentVolumeOut() {
+    if (sessionState == SessionState::IDLE) return 0.0f;
+    float raw = sensorFlow_getTotalL(1) - sessionStartTotal1;
+    return raw > 0.0f ? raw : 0.0f;
+}

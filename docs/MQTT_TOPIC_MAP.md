@@ -18,6 +18,7 @@ QoS is 0 for all topics. Retain and direction as noted.
 | `twwp/<id>/sessions_recent` | yes | node → broker | Retained JSON array of the last 10 sessions (newest-first). Each session object includes: id, start_ts, end_ts, dur_s, flow_dur_s, idle_s, vol_out, vol_in, peak_out, peak_in. Republished after each session ends and on MQTT reconnect. |
 | `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4). |
 | `twwp/<id>/ota_state` | yes | node → broker | Dedicated OTA state topic for high-frequency OTA progress/status updates. Reserved for OTA telemetry. |
+| `twwp/<id>/wq_config` | yes | node → broker | Retained JSON of all water quality threshold, label, and name config values. Published on MQTT connect and after any cmd change. |
 | `twwp/register` | no | node → broker | First-connect registration payload (M8 — not yet implemented). |
 
 ---

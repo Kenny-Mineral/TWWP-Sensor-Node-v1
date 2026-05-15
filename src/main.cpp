@@ -20,6 +20,7 @@
 #include "rs485_mux.h"
 #include "sensor_tds_meter.h"
 #include "sensor_yieryi.h"
+#include "wq_config.h"
 #include "sensor_pressure_stub.h"
 #include "sensor_temp_stub.h"
 #include "actuator_valve.h"
@@ -1522,6 +1523,94 @@ static bool publishHaDiscoveryTdsMeter() {
     return ok;
 }
 
+static bool publishHaDiscoveryWqConfig() {
+    bool ok = true;
+    const char* stateTopic = TOPIC_WQ_CONFIG;
+
+    struct NumEnt { const char* uid; const char* name; const char* vk; const char* ck;
+                    float mn; float mx; float st; } nums[] = {
+        { "twwp_" NODE_ID "_wq_pre_ro_max",        "Pre-RO Max TDS",    "pre_ro_max",       "wq_pre_ro_max",        0, 500, 1   },
+        { "twwp_" NODE_ID "_wq_post_ro_good_max",  "Post-RO Good Max",  "post_ro_good_max", "wq_post_ro_good_max",  0,  50, 0.5 },
+        { "twwp_" NODE_ID "_wq_post_ro_check_max", "Post-RO Check Max", "post_ro_check_max","wq_post_ro_check_max", 0,  50, 0.5 },
+        { "twwp_" NODE_ID "_wq_remin_min",          "Remin Min TDS",     "remin_min",        "wq_remin_min",         0, 100, 1   },
+        { "twwp_" NODE_ID "_wq_remin_max",          "Remin Max TDS",     "remin_max",        "wq_remin_max",         0, 100, 1   },
+    };
+    for (auto& n : nums) {
+        JsonDocument doc;
+        doc["name"]             = n.name;
+        doc["unique_id"]        = n.uid;
+        doc["object_id"]        = n.uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = stateTopic;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", n.vk);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char ctmpl[80];
+        snprintf(ctmpl, sizeof(ctmpl), "{\"%s\": {{ value }}}", n.ck);
+        doc["command_template"] = ctmpl;
+        doc["unit_of_measurement"] = "ppm";
+        doc["min"]  = n.mn;
+        doc["max"]  = n.mx;
+        doc["step"] = n.st;
+        doc["mode"] = "box";
+        doc["icon"] = "mdi:water-check";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", n.uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    }
+
+    struct TxtEnt { const char* uid; const char* name; const char* vk; const char* ck; } txts[] = {
+        { "twwp_" NODE_ID "_wq_pre_ro_name",          "Pre-RO Name",            "pre_ro_name",         "wq_pre_ro_name"          },
+        { "twwp_" NODE_ID "_wq_post_ro_name",         "Post-RO Name",           "post_ro_name",        "wq_post_ro_name"         },
+        { "twwp_" NODE_ID "_wq_remin_name",           "Remin Name",             "remin_name",          "wq_remin_name"           },
+        { "twwp_" NODE_ID "_wq_pre_ro_ok_label",      "Pre-RO OK Label",        "pre_ro_ok_label",     "wq_pre_ro_ok_label"      },
+        { "twwp_" NODE_ID "_wq_pre_ro_warn_label",    "Pre-RO Warn Label",      "pre_ro_warn_label",   "wq_pre_ro_warn_label"    },
+        { "twwp_" NODE_ID "_wq_post_ro_good_label",   "Post-RO Good Label",     "post_ro_good_label",  "wq_post_ro_good_label"   },
+        { "twwp_" NODE_ID "_wq_post_ro_check_label",  "Post-RO Check Label",    "post_ro_check_label", "wq_post_ro_check_label"  },
+        { "twwp_" NODE_ID "_wq_post_ro_change_label", "Post-RO Change Label",   "post_ro_change_label","wq_post_ro_change_label" },
+        { "twwp_" NODE_ID "_wq_remin_low_label",      "Remin Low Label",        "remin_low_label",     "wq_remin_low_label"      },
+        { "twwp_" NODE_ID "_wq_remin_ok_label",       "Remin OK Label",         "remin_ok_label",      "wq_remin_ok_label"       },
+        { "twwp_" NODE_ID "_wq_remin_high_label",     "Remin High Label",       "remin_high_label",    "wq_remin_high_label"     },
+    };
+    for (auto& t : txts) {
+        JsonDocument doc;
+        doc["name"]             = t.name;
+        doc["unique_id"]        = t.uid;
+        doc["object_id"]        = t.uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = stateTopic;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", t.vk);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char ctmpl[80];
+        snprintf(ctmpl, sizeof(ctmpl), "{\"%s\": \"{{ value }}\"}", t.ck);
+        doc["command_template"] = ctmpl;
+        doc["max"]  = 15;
+        doc["icon"] = "mdi:label-outline";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; continue; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/text/%s/config", t.uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    }
+
+    Serial.print("[MQTT] HA WQ config discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static void publishOnlineState() {
     if (!netMqtt_isConnected()) {
         return;
@@ -1543,6 +1632,8 @@ static void publishOnlineState() {
     publishHaDiscoveryValveConfig();
     publishHaDiscoveryWaterQuality();
     publishHaDiscoveryTdsMeter();
+    publishHaDiscoveryWqConfig();
+    wqConfig_publishState();
     publishM0Status(true, false);
     sessionFlow_republishRecentSessions();
     lastHeartbeatMs = millis();
@@ -1596,6 +1687,8 @@ static void handleCmd(const char* payload) {
         Serial.println("[CMD] invalid JSON");
         return;
     }
+
+    wqConfig_handleCmd(payload);
 
     if (!doc["set_k_factor_1"].isNull()) {
         sensorFlow_setKFactor(1, doc["set_k_factor_1"].as<float>());
@@ -1818,6 +1911,7 @@ void setup() {
     rs485Mux_begin();
     sensorYieryi_begin();
     sensorTdsMeter_begin();
+    wqConfig_begin();
     sensorPressure_begin();
     sensorTemp_begin();
     displayOled_begin();

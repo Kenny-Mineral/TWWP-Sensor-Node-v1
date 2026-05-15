@@ -12,10 +12,13 @@ static const uint32_t YIERYI_BAUD = 9600;
 static const uint32_t YIERYI_DEFAULT_POLL_MS = 15000UL;
 static const uint32_t YIERYI_MIN_POLL_MS = 5000UL;
 static const uint32_t YIERYI_RESPONSE_TIMEOUT_MS = 700UL;
-static const uint32_t YIERYI_MODE_SETTLE_MS = 250UL;
+static const uint32_t YIERYI_MODE_SETTLE_MS = 500UL;
 static const uint32_t YIERYI_STALE_MS = 60000UL;
-static const uint8_t YIERYI_READ_LEN = 16;
-static const uint8_t YIERYI_WRITE_ACK_LEN = 8;
+static const uint8_t  YIERYI_READ_LEN          = 16;
+static const uint8_t  YIERYI_WRITE_ACK_LEN     = 8;
+static const float    YIERYI_PH_MIN            = 0.0f;
+static const float    YIERYI_PH_MAX            = 14.0f;
+static const int16_t  YIERYI_ORP_MAX_DELTA_MV  = 300;
 
 enum class PollState : uint8_t {
     Idle,
@@ -173,18 +176,38 @@ static bool parseReadResponse(ZoneState& zone, MeterMode mode) {
         zone.humidityPct = humRaw;
         zone.tdsPpm = zone.ecUsCm * 0.5f;
         zone.commonValid = true;
+        bool valueAccepted = false;
         if (mode == MeterMode::Orp) {
             // Bit 15 = sign indicator (1=positive, 0=negative), bits 14:0 = magnitude in mV
             bool positive = (phOrOrpRaw & 0x8000) != 0;
-            zone.orpMv = positive ? static_cast<int16_t>(phOrOrpRaw & 0x7FFF)
-                                  : -static_cast<int16_t>(phOrOrpRaw & 0x7FFF);
-            zone.orpValid = true;
+            int16_t parsedOrp = positive ? static_cast<int16_t>(phOrOrpRaw & 0x7FFF)
+                                         : -static_cast<int16_t>(phOrOrpRaw & 0x7FFF);
+            bool orpOk = true;
+            if (zone.orpValid) {
+                int16_t delta = parsedOrp > zone.orpMv ? parsedOrp - zone.orpMv
+                                                       : zone.orpMv - parsedOrp;
+                if (delta > YIERYI_ORP_MAX_DELTA_MV) {
+                    setError(zone, "orp spike rejected");
+                    orpOk = false;
+                }
+            }
+            if (orpOk) {
+                zone.orpMv    = parsedOrp;
+                zone.orpValid = true;
+                valueAccepted = true;
+            }
         } else {
-            zone.ph = static_cast<float>(phOrOrpRaw) / 100.0f;
-            zone.phValid = true;
+            float parsedPh = static_cast<float>(phOrOrpRaw) / 100.0f;
+            if (parsedPh < YIERYI_PH_MIN || parsedPh > YIERYI_PH_MAX) {
+                setError(zone, "ph out of range");
+            } else {
+                zone.ph       = parsedPh;
+                zone.phValid  = true;
+                valueAccepted = true;
+            }
         }
         zone.lastSuccessMs = millis();
-        setError(zone, "ok");
+        if (valueAccepted) setError(zone, "ok");
         rawToHex(frame, YIERYI_READ_LEN, zone.rawHex, sizeof(zone.rawHex));
         return true;
     }
