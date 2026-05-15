@@ -1,0 +1,294 @@
+{
+  "datasource": {
+    "type": "influxdb",
+    "uid": "P8BBDD0ADBF206566"
+  },
+  "id": 2481090786902016,
+  "panels": [
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 0,
+          "unit": "ppm"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Pre-RO TDS",
+          "query": "SELECT mean(\"value\") FROM \"ppm\" WHERE (\"entity_id\" = 'pre_ro_tds_meter_pre_ro_tds_meter_tds') AND $timeFilter GROUP BY time($__interval) fill(previous)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pre-RO TDS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 0,
+          "unit": "ppm"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Post-RO TDS",
+          "query": "SELECT mean(\"value\") FROM \"ppm\" WHERE (\"entity_id\" = 'post_ro_tds_meter_post_ro_tds_meter_tds') AND $timeFilter GROUP BY time($__interval) fill(previous)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Post-RO TDS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 0,
+          "unit": "ppm"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Remin TDS",
+          "query": "SELECT mean(\"value\") FROM \"ppm\" WHERE (\"entity_id\" = 'remineralised_water_quality_remineralised_water_quality_tds') AND $timeFilter GROUP BY time($__interval) fill(previous)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Remin TDS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 2,
+          "max": 14,
+          "min": 0,
+          "unit": "none"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Remin pH",
+          "query": "SELECT mean(\"value\") FROM \"pH\" WHERE (\"entity_id\" = 'remineralised_water_quality_remineralised_water_quality_ph') AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Remin pH",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 0,
+          "unit": "mV"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Remin ORP",
+          "query": "SELECT mean(\"value\") FROM \"mV\" WHERE (\"entity_id\" = 'remineralised_water_quality_remineralised_water_quality_orp') AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Remin ORP",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "P8BBDD0ADBF206566"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          },
+          "decimals": 1,
+          "unit": "celsius"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Pre-RO Temp",
+          "query": "SELECT mean(\"value\") FROM \"\u00b0C\" WHERE (\"entity_id\" = 'pre_ro_tds_meter_pre_ro_tds_meter_temperature') AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Post-RO Temp",
+          "query": "SELECT mean(\"value\") FROM \"\u00b0C\" WHERE (\"entity_id\" = 'post_ro_tds_meter_post_ro_tds_meter_temperature') AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Remin Temp",
+          "query": "SELECT mean(\"value\") FROM \"\u00b0C\" WHERE (\"entity_id\" = 'remineralised_water_quality_remineralised_water_quality_temperature') AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Temperature \u2014 All Zones",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 36,
+  "tags": [
+    "twwp"
+  ],
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "TWWP \u2014 Water Quality",
+  "uid": "twwp-water-quality",
+  "version": 9
+}
