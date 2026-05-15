@@ -3,15 +3,16 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
-### Session 2026-05-15 — WQ summary OLED frame, HA-configurable thresholds, OTA fixes
+### Session 2026-05-15 — Sensor model registry, calibration system, Grafana dashboards
 
-**Scope:** Added WQ Summary OLED frame replacing Pre-RO/Post-RO slides — shows all 3 filter positions (name, TDS ppm, status label) on one slide. New `wq_config` module owns NVS-persisted thresholds, zone names, and status labels; 16 HA entities (5 number + 11 text) published via MQTT discovery. Header updated to RTC time + live session volume. Added `restart_device` MQTT command + HA button (deferred 2s restart). Fixed OTA stuck-in-FAILED state so MQTT retries work without a physical reboot. Confirmed OTA working end-to-end — firmware deployed and running on hardware.
+**Scope:**
+- **Flow sensor model registry** — compile-time registry (USN-HS06PE, USN-HS06PS, DWS-MH-02). DWS-MH-02 has 5-point K-table from F=15Q−2 formula. Model selectable per channel via HA `select` entity or `set_sensor_model_1/2` MQTT cmd. Persisted to node.json; explicit k_factor/k_table still override model defaults.
+- **Flow K-factor calibration wizard** — per-channel begin/commit/accept/abort state machine. Set reference volume → Start → fill container → Commit → see suggested K → Accept/Abort. MQTT status: `cal_state_1/2`, `cal_suggested_k_1/2`, `cal_pulses_since_start_1/2`, `cal_ref_vol_1/2`. HA buttons + number entity per channel.
+- **TDS/EC calibration** — per-zone software correction factor (NVS persisted, `tds_cal` namespace). Wizard: set ref EC → begin → commit (snapshots current raw EC) → suggested factor → accept/abort. Direct `set_tds_pre_ro/post_ro_ec_cal_factor` also available. Raw EC exposed alongside calibrated values.
+- **USER_OPERATIONS.md** — full calibration playbook section added covering flow, Pre/Post-RO EC, Yieryi, and voltage.
+- **Grafana dashboards** — all 4 rebuilt with correct InfluxDB entity IDs. Previous dashboards had wrong entity IDs (used non-existent Yieryi pre/post-RO entities for TDS; non-existent `%` measurement for battery/WiFi). Water Quality now uses `pre_ro_tds_meter_*` / `post_ro_tds_meter_*` for Pre/Post-RO, `remineralised_water_quality_*` for Remin. EC panels omitted (empty in InfluxDB). Dashboard JSON provisioned on server at `/home/kenny/projects/twwp-monitoring/grafana/provisioning/dashboards/`.
 
-**Key findings:**
-- `setSocketOption fail on 0, errno: 9` during OTA is a benign ESP32 TLS cleanup warning — OTA succeeds despite the log line
-- OTA success pattern: socket error logged → ~97s download → ASSOC_LEAVE → rst:0xc (ESP.restart()) → new firmware boots
-- wq_config NVS NOT_FOUND errors on first boot are expected — defaults load correctly, `[WQ_CFG] loaded` confirms it
-- OTA state machine previously stuck in FAILED after any error, blocking retries — fixed with FAILED→IDLE reset in `netOta_beginUpdate()`
+**Key clarification:** Pre-RO and Post-RO water quality comes from WROOM-32 EC/TDS meter via RS485 (`tds_pre_ro_*` / `tds_post_ro_*` fields). Yieryi pre/post-RO meters are not physically connected — only Remin Yieryi is live.
 
 ---
 
@@ -20,10 +21,10 @@ none
 
 ## Next step
 
-M2 — Confirm pressure transducer model + PSI range with user before ordering.
+Export Grafana dashboard JSON from server and commit to local `grafana/provisioning/dashboards/` for version control.
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-05-15 22:30
+2026-05-15 23:45

@@ -156,8 +156,8 @@ Server-side analytics layer. Local project: `/home/kenny/twwp-monitoring/`. Not 
 - [x] Verify HA writing — InfluxDB confirmed receiving data (85 events on first flush, ~2 events/10s thereafter). Grafana Explore shows TWWP measurements.
 - [x] **Critical fix** — `influxdb: !include influxdb.yaml` in `configuration.yaml` silently blocks entire influxdb component (YAML schema validation fails without connection keys). Removed the include line entirely. InfluxDB integration is now 100% UI-managed (Settings → Integrations → InfluxDB). `ha-config/influxdb.yaml` kept as documentation only — do NOT reference it from configuration.yaml.
 - [x] Grafana port binding fixed — changed from `127.0.0.1:3000` to `0.0.0.0:3000` so Tailscale traffic can reach it. Accessible at `http://100.67.244.37:3000`.
-- [ ] Create Grafana dashboards via UI: Overview, Flow History, Water Quality (3-zone), System.
-- [ ] Export dashboard JSON and commit to `grafana/provisioning/dashboards/`.
+- [x] Create Grafana dashboards: Overview, Flow History, Water Quality (3-zone), System. All 4 deployed and live. Panels rebuilt to use confirmed InfluxDB entity IDs — previous dashboards had wrong entity IDs for TDS (used non-existent Yieryi pre/post-RO entities) and battery/WiFi (used non-existent `%` measurement). Water Quality now correctly uses `pre_ro_tds_meter_*` and `post_ro_tds_meter_*` for Pre/Post-RO zones and `remineralised_water_quality_*` for Remin. EC (µS/cm) panels omitted — that measurement is empty in InfluxDB. Dashboard JSON provisioned from server at `/home/kenny/projects/twwp-monitoring/grafana/provisioning/dashboards/`.
+- [ ] Export final dashboard JSON and commit to local `grafana/provisioning/dashboards/` for version control.
 
 ---
 
@@ -183,7 +183,7 @@ Firmware driver implemented from the vendor Modbus register sheet. Hardware resp
 - [ ] Investigate ArduinoOTA LAN OTA — UDP invitation reaches device (port 3232 open) but device does not respond. Likely router AP/client isolation. Test: disable AP isolation or use tcpdump on device's RSSI-confirmed AP.
 - [x] Validate MQTT-driven OTA end-to-end after the remote-hosting hardening. Use a real hosted `firmware.bin`, confirm `ota_state` progress and reboot on success, or capture exact `ota_error` on failure.
 - [ ] Confirm Modbus addresses on post-RO and remineralised meters before enabling those zones in `/config/node.json`.
-- [ ] Create Grafana dashboards: Overview, Flow History, Water Quality (3-zone), System. Export JSON to `grafana/provisioning/dashboards/`.
+- [x] Grafana dashboards complete — see Monitoring Stack section above.
 
 ---
 
@@ -200,7 +200,7 @@ Standalone ESP32-WROOM-32 + ADS1115 EC/TDS meter transmitting `$WM,...` ASCII fr
 - [x] **Phase 2 bench test (2026-05-12)**: `[TDS] P1/P2` frames confirmed every ~3s. HA receiving all 6 TDS entities with real values. YiErYi water quality also present — bus coexistence confirmed. No SD failure alerts.
 - [x] `docs/USER_OPERATIONS.md` updated: serial monitor receive-only, SD silent writes, HWCDC JSON truncation, DI/RO wiring gotcha, TDS calibration note.
 - [x] **TDS probe calibration** — Software EC correction factor per zone (NVS persisted, default 1.0). Wizard: set ref EC → begin → commit (snapshots raw EC) → shows suggested factor → accept/abort. Direct set also available. Raw EC exposed alongside calibrated EC/ppm. Full playbook in `USER_OPERATIONS.md`. MQTT cmd keys: `tds_cal_begin/commit/accept/abort`, `set_tds_cal_ref_ec_0/1`, `set_tds_pre_ro/post_ro_ec_cal_factor`, `set_tds_pre_ro/post_ro_cal_date`.
-- [ ] **Grafana panels**: TDS fields reach InfluxDB via HA but dashboard panels not yet created (part of Grafana dashboards task in M5 above).
+- [x] **Grafana panels**: TDS and temperature panels live in twwp-water-quality dashboard.
 
 **Wiring note:** WROOM-32 RS485 module DI (Data In = TX from MCU) and RO (Receiver Output = RX to MCU) were swapped on first bench attempt. Correct wiring: DI→TX pin, RO→RX pin of WROOM-32.
 
