@@ -31,6 +31,7 @@
 #endif
 
 static unsigned long lastHeartbeatMs = 0;
+static uint32_t      s_restartMs     = 0;  // non-zero = deferred restart pending
 
 static const char* leakStateText() {
     return sensorLeak_isWet() ? "WET" : "DRY";
@@ -992,6 +993,26 @@ static bool publishHaDiscoveryDiagnostics() {
         }
     }
 
+    // Restart device button
+    {
+        JsonDocument doc;
+        doc["name"]               = "TWWP " NODE_ID " Restart Device";
+        doc["unique_id"]          = "twwp_" NODE_ID "_restart_device";
+        doc["object_id"]          = "twwp_" NODE_ID "_restart_device";
+        doc["entity_category"]    = "config";
+        doc["icon"]               = "mdi:restart";
+        doc["command_topic"]      = TOPIC_CMD;
+        doc["payload_press"]      = "{\"restart_device\": true}";
+        doc["availability_topic"]  = TOPIC_LWT;
+        doc["payload_available"]   = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768];
+        if (serializeDoc(doc, payload, sizeof(payload))) {
+            ok &= netMqtt_publish("homeassistant/button/twwp_" NODE_ID "_restart_device/config", payload, true);
+        }
+    }
+
     // Restart WiFi button
     {
         JsonDocument doc;
@@ -1696,6 +1717,11 @@ static void handleCmd(const char* payload) {
     if (!doc["set_k_factor_2"].isNull()) {
         sensorFlow_setKFactor(2, doc["set_k_factor_2"].as<float>());
     }
+    if (doc["restart_device"] | false) {
+        storeSd_logEvent("[CMD] restart_device received — rebooting in 2s");
+        Serial.println("[CMD] restart_device — rebooting in 2s");
+        s_restartMs = millis() + 2000;
+    }
     if (doc["restart_wifi"] | false) {
         storeSd_logEvent("[CMD] restart_wifi received");
         netWifi_reconnect();
@@ -1961,4 +1987,8 @@ void loop() {
     handleDataLog();
     handleResetCredsButton();
     updateM0Led();
+
+    if (s_restartMs && millis() >= s_restartMs) {
+        ESP.restart();
+    }
 }
