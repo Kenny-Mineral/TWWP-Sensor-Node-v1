@@ -21,7 +21,7 @@ none
 
 ## Next step
 
-Export Grafana dashboard JSON from server and commit to local `grafana/provisioning/dashboards/` for version control.
+M5 — Confirm Modbus addresses on Post-RO and Remin Yieryi meters so those zones can be enabled in node.json.
 
 ## Tool last used
 claude-code

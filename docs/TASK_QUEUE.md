@@ -157,7 +157,7 @@ Server-side analytics layer. Local project: `/home/kenny/twwp-monitoring/`. Not 
 - [x] **Critical fix** — `influxdb: !include influxdb.yaml` in `configuration.yaml` silently blocks entire influxdb component (YAML schema validation fails without connection keys). Removed the include line entirely. InfluxDB integration is now 100% UI-managed (Settings → Integrations → InfluxDB). `ha-config/influxdb.yaml` kept as documentation only — do NOT reference it from configuration.yaml.
 - [x] Grafana port binding fixed — changed from `127.0.0.1:3000` to `0.0.0.0:3000` so Tailscale traffic can reach it. Accessible at `http://100.67.244.37:3000`.
 - [x] Create Grafana dashboards: Overview, Flow History, Water Quality (3-zone), System. All 4 deployed and live. Panels rebuilt to use confirmed InfluxDB entity IDs — previous dashboards had wrong entity IDs for TDS (used non-existent Yieryi pre/post-RO entities) and battery/WiFi (used non-existent `%` measurement). Water Quality now correctly uses `pre_ro_tds_meter_*` and `post_ro_tds_meter_*` for Pre/Post-RO zones and `remineralised_water_quality_*` for Remin. EC (µS/cm) panels omitted — that measurement is empty in InfluxDB. Dashboard JSON provisioned from server at `/home/kenny/projects/twwp-monitoring/grafana/provisioning/dashboards/`.
-- [ ] Export final dashboard JSON and commit to local `grafana/provisioning/dashboards/` for version control.
+- [x] Export final dashboard JSON committed to `grafana/provisioning/dashboards/`.
 
 ---
 
