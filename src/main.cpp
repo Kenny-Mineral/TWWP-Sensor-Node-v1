@@ -120,6 +120,24 @@ static void addTdsMeterStatus(JsonDocument& doc, uint8_t zone, const char* prefi
 
     snprintf(key, sizeof(key), "tds_%s_last_error", prefix);
     doc[key] = sensorTdsMeter_getLastError(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_ec_raw", prefix);
+    setJsonFloatOrNull(doc, key, online, sensorTdsMeter_getRawEc(zone), 0);
+
+    snprintf(key, sizeof(key), "tds_%s_ec_cal_factor", prefix);
+    doc[key] = sensorTdsMeter_getEcCalFactor(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_cal_state", prefix);
+    doc[key] = sensorTdsMeter_getCalState(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_cal_suggested_factor", prefix);
+    doc[key] = sensorTdsMeter_getCalSuggestedFactor(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_cal_ref_ec", prefix);
+    doc[key] = sensorTdsMeter_getCalRefEc(zone);
+
+    snprintf(key, sizeof(key), "tds_%s_cal_date", prefix);
+    doc[key] = sensorTdsMeter_getCalDate(zone);
 }
 
 static const char* csvFloatOrBlank(char* out, size_t outLen, bool valid, float value, uint8_t decimals) {
@@ -183,6 +201,8 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["waste_ratio_month"]  = serialized(String(calcWasteRatio(sensorFlow_getMonthL(1), sensorFlow_getMonthL(2)), 2));
     doc["waste_ratio_year"]   = serialized(String(calcWasteRatio(sensorFlow_getYearL(1),  sensorFlow_getYearL(2)),  2));
 
+    doc["sensor_model_1"] = sensorFlow_getModel(1);
+    doc["sensor_model_2"] = sensorFlow_getModel(2);
     doc["k_factor_1"]   = sensorFlow_getKFactor(1);
     doc["k_factor_2"]   = sensorFlow_getKFactor(2);
     doc["k_applied_1"]  = sensorFlow_getAppliedKFactor(1);
@@ -191,6 +211,14 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["pulses_raw_2"] = (unsigned long long)sensorFlow_getTotalPulses(2);
     doc["k_table_1"] = serialized(sensorFlow_getKTableJson(1));
     doc["k_table_2"] = serialized(sensorFlow_getKTableJson(2));
+    doc["cal_state_1"]            = sensorFlow_getCalState(1);
+    doc["cal_state_2"]            = sensorFlow_getCalState(2);
+    doc["cal_suggested_k_1"]      = sensorFlow_getCalSuggestedK(1);
+    doc["cal_suggested_k_2"]      = sensorFlow_getCalSuggestedK(2);
+    doc["cal_pulses_since_start_1"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(1);
+    doc["cal_pulses_since_start_2"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(2);
+    doc["cal_ref_vol_1"]          = sensorFlow_getCalRefVol(1);
+    doc["cal_ref_vol_2"]          = sensorFlow_getCalRefVol(2);
     doc["debounce_us_1"] = sensorFlow_getDebounceUs(1);
     doc["debounce_us_2"] = sensorFlow_getDebounceUs(2);
     doc["flow_avg_window"] = sensorFlow_getFlowAvgWindow();
@@ -675,6 +703,59 @@ static bool publishHaDiscoveryFlow() {
                     "homeassistant/number/twwp_" NODE_ID "_flow_avg_window/config",
                     payload, true)) ok = false;
         }
+    }
+
+    // --- Sensor model select entities ---
+    {
+        char modelList[128];
+        sensorFlow_getModelList(modelList, sizeof(modelList));
+
+        auto publishModelSelect = [&ok, &modelList](const char* uid, const char* name,
+                                                     const char* valueKey, const char* cmdKey,
+                                                     const char* subId, const char* subName) {
+            JsonDocument doc;
+            doc["name"]            = name;
+            doc["unique_id"]       = uid;
+            doc["object_id"]       = uid;
+            doc["entity_category"] = "config";
+            doc["icon"]            = "mdi:pulse";
+            doc["state_topic"]     = TOPIC_STATUS;
+            char tmpl[64];
+            snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+            doc["value_template"]   = tmpl;
+            doc["command_topic"]    = TOPIC_CMD;
+            char cmdTmpl[64];
+            snprintf(cmdTmpl, sizeof(cmdTmpl), "{\"%s\": \"{{ value }}\"}", cmdKey);
+            doc["command_template"] = cmdTmpl;
+            doc["availability_topic"]    = TOPIC_LWT;
+            doc["payload_available"]     = "online";
+            doc["payload_not_available"] = "offline";
+            fillHaSubDevice(doc, subId, subName);
+
+            // Parse comma-separated model list into JSON options array
+            JsonArray opts = doc["options"].to<JsonArray>();
+            char tmp[128];
+            strlcpy(tmp, modelList, sizeof(tmp));
+            char* tok = strtok(tmp, ",");
+            while (tok) { opts.add(tok); tok = strtok(nullptr, ","); }
+
+            char payload[768];
+            if (!serializeDoc(doc, payload, sizeof(payload))) {
+                Serial.println("[MQTT] model select JSON too large");
+                ok = false;
+                return;
+            }
+            char topic[128];
+            snprintf(topic, sizeof(topic), "homeassistant/select/%s/config", uid);
+            if (!netMqtt_publish(topic, payload, true)) ok = false;
+        };
+
+        publishModelSelect("twwp_" NODE_ID "_sensor_model_1", "Output Sensor Model",
+                           "sensor_model_1", "set_sensor_model_1",
+                           "twwp_" NODE_ID "_flow1", "RO Output");
+        publishModelSelect("twwp_" NODE_ID "_sensor_model_2", "Input Sensor Model",
+                           "sensor_model_2", "set_sensor_model_2",
+                           "twwp_" NODE_ID "_flow2", "RO Input");
     }
 
     Serial.print("[MQTT] HA flow discovery ");
@@ -1632,6 +1713,235 @@ static bool publishHaDiscoveryWqConfig() {
     return ok;
 }
 
+static bool publishHaDiscoveryCalibration() {
+    bool ok = true;
+
+    // Shared helpers ──────────────────────────────────────────────────────────
+
+    auto pubButton = [&ok](const char* uid, const char* name, const char* payloadPress,
+                            const char* subId, const char* subName) {
+        JsonDocument doc;
+        doc["name"]              = name;
+        doc["unique_id"]         = uid;
+        doc["object_id"]         = uid;
+        doc["entity_category"]   = "config";
+        doc["command_topic"]     = TOPIC_CMD;
+        doc["payload_press"]     = payloadPress;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaSubDevice(doc, subId, subName);
+        char payload[640];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/button/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    auto pubNumber = [&ok](const char* uid, const char* name,
+                            const char* valueKey, const char* cmdKey,
+                            const char* unit, float mn, float mx, float step,
+                            const char* subId, const char* subName,
+                            const char* entityCategory = "config") {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["entity_category"]  = entityCategory;
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char ctmpl[80];
+        snprintf(ctmpl, sizeof(ctmpl), "{\"%s\": {{ value }}}", cmdKey);
+        doc["command_template"] = ctmpl;
+        if (unit && unit[0]) doc["unit_of_measurement"] = unit;
+        doc["min"]  = mn;
+        doc["max"]  = mx;
+        doc["step"] = step;
+        doc["mode"] = "box";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaSubDevice(doc, subId, subName);
+        char payload[768];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    auto pubDiagSensor = [&ok](const char* uid, const char* name,
+                                const char* valueKey, const char* unit,
+                                const char* subId, const char* subName) {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["entity_category"]  = "diagnostic";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+        doc["value_template"]   = tmpl;
+        if (unit && unit[0]) doc["unit_of_measurement"] = unit;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaSubDevice(doc, subId, subName);
+        char payload[640];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    auto pubCalDateText = [&ok](const char* uid, const char* name,
+                                 const char* valueKey, const char* cmdKey,
+                                 const char* subId, const char* subName) {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = TOPIC_STATUS;
+        char tmpl[80];
+        snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char ctmpl[80];
+        snprintf(ctmpl, sizeof(ctmpl), "{\"%s\": \"{{ value }}\"}", cmdKey);
+        doc["command_template"] = ctmpl;
+        doc["max"]  = 24;
+        doc["icon"] = "mdi:calendar-check";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaSubDevice(doc, subId, subName);
+        char payload[640];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "homeassistant/text/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    // ── Flow calibration (ch1 = Output, ch2 = Input) ─────────────────────────
+
+    struct FlowChDef { const char* suffix; const char* label; const char* subId; int ch; };
+    const FlowChDef flowChs[] = {
+        { "1", "Output", "twwp_" NODE_ID "_flow1", 1 },
+        { "2", "Input",  "twwp_" NODE_ID "_flow2", 2 },
+    };
+
+    for (const auto& ch : flowChs) {
+        char uid[80], name[80], vk[48], ck[48], pp[64];
+
+        // Reference volume number
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_cal_ref_vol_%s",      ch.suffix);
+        snprintf(name, sizeof(name), "%s Cal Reference Volume",               ch.label);
+        snprintf(vk,   sizeof(vk),   "cal_ref_vol_%s",                        ch.suffix);
+        snprintf(ck,   sizeof(ck),   "set_cal_ref_vol_%s",                    ch.suffix);
+        pubNumber(uid, name, vk, ck, "L", 0.5f, 50.0f, 0.1f, ch.subId, ch.label);
+
+        // Begin button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_flow_cal_begin_%s",   ch.suffix);
+        snprintf(name, sizeof(name), "Start %s Flow Cal",                     ch.label);
+        snprintf(pp,   sizeof(pp),   "{\"flow_cal_begin\": %s}",              ch.suffix);
+        pubButton(uid, name, pp, ch.subId, ch.label);
+
+        // Commit button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_flow_cal_commit_%s",  ch.suffix);
+        snprintf(name, sizeof(name), "Commit %s Flow Cal",                    ch.label);
+        snprintf(pp,   sizeof(pp),   "{\"flow_cal_commit\": %s}",             ch.suffix);
+        pubButton(uid, name, pp, ch.subId, ch.label);
+
+        // Accept button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_flow_cal_accept_%s",  ch.suffix);
+        snprintf(name, sizeof(name), "Accept %s Cal K",                       ch.label);
+        snprintf(pp,   sizeof(pp),   "{\"flow_cal_accept\": %s}",             ch.suffix);
+        pubButton(uid, name, pp, ch.subId, ch.label);
+
+        // Abort button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_flow_cal_abort_%s",   ch.suffix);
+        snprintf(name, sizeof(name), "Abort %s Flow Cal",                     ch.label);
+        snprintf(pp,   sizeof(pp),   "{\"flow_cal_abort\": %s}",              ch.suffix);
+        pubButton(uid, name, pp, ch.subId, ch.label);
+
+        // Suggested K diagnostic sensor
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_cal_suggested_k_%s",  ch.suffix);
+        snprintf(name, sizeof(name), "%s Cal Suggested K",                    ch.label);
+        snprintf(vk,   sizeof(vk),   "cal_suggested_k_%s",                    ch.suffix);
+        pubDiagSensor(uid, name, vk, "pulses/L", ch.subId, ch.label);
+    }
+
+    // ── TDS calibration (zone 0 = Pre-RO, zone 1 = Post-RO) ─────────────────
+
+    struct TdsZoneDef { const char* suffix; const char* label; const char* subId; int zone; };
+    const TdsZoneDef tdsZones[] = {
+        { "pre_ro",  "Pre-RO",  "twwp_" NODE_ID "_tds_pre_ro",  0 },
+        { "post_ro", "Post-RO", "twwp_" NODE_ID "_tds_post_ro", 1 },
+    };
+
+    for (const auto& z : tdsZones) {
+        char uid[80], name[80], vk[64], ck[64], pp[80];
+
+        // EC cal factor number (manual override)
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_ec_cal_factor",    z.suffix);
+        snprintf(name, sizeof(name), "%s EC Cal Factor",                          z.label);
+        snprintf(vk,   sizeof(vk),   "tds_%s_ec_cal_factor",                     z.suffix);
+        snprintf(ck,   sizeof(ck),   "set_tds_%s_ec_cal_factor",                 z.suffix);
+        pubNumber(uid, name, vk, ck, "", 0.5f, 2.0f, 0.001f, z.subId, z.label);
+
+        // Cal reference EC number (stored in sensor RAM)
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_ref_ec",       z.suffix);
+        snprintf(name, sizeof(name), "%s Cal Reference EC",                       z.label);
+        snprintf(vk,   sizeof(vk),   "tds_%s_cal_ref_ec",                        z.suffix);
+        snprintf(ck,   sizeof(ck),   "set_tds_cal_ref_ec_%d",                    z.zone);
+        pubNumber(uid, name, vk, ck, "µS/cm", 1.0f, 50000.0f, 1.0f, z.subId, z.label);
+
+        // Begin button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_begin",        z.suffix);
+        snprintf(name, sizeof(name), "Start %s EC Cal",                           z.label);
+        snprintf(pp,   sizeof(pp),   "{\"tds_cal_begin\": %d}",                  z.zone);
+        pubButton(uid, name, pp, z.subId, z.label);
+
+        // Commit button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_commit",       z.suffix);
+        snprintf(name, sizeof(name), "Commit %s EC Cal",                          z.label);
+        snprintf(pp,   sizeof(pp),   "{\"tds_cal_commit\": %d}",                 z.zone);
+        pubButton(uid, name, pp, z.subId, z.label);
+
+        // Accept button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_accept",       z.suffix);
+        snprintf(name, sizeof(name), "Accept %s EC Cal",                          z.label);
+        snprintf(pp,   sizeof(pp),   "{\"tds_cal_accept\": %d}",                 z.zone);
+        pubButton(uid, name, pp, z.subId, z.label);
+
+        // Abort button
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_abort",        z.suffix);
+        snprintf(name, sizeof(name), "Abort %s EC Cal",                           z.label);
+        snprintf(pp,   sizeof(pp),   "{\"tds_cal_abort\": %d}",                  z.zone);
+        pubButton(uid, name, pp, z.subId, z.label);
+
+        // Suggested factor diagnostic sensor
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_suggested_factor", z.suffix);
+        snprintf(name, sizeof(name), "%s Cal Suggested Factor",                       z.label);
+        snprintf(vk,   sizeof(vk),   "tds_%s_cal_suggested_factor",                  z.suffix);
+        pubDiagSensor(uid, name, vk, "", z.subId, z.label);
+
+        // Cal date text
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_tds_%s_cal_date",         z.suffix);
+        snprintf(name, sizeof(name), "%s EC Cal Date",                            z.label);
+        snprintf(vk,   sizeof(vk),   "tds_%s_cal_date",                          z.suffix);
+        snprintf(ck,   sizeof(ck),   "set_tds_%s_cal_date",                      z.suffix);
+        pubCalDateText(uid, name, vk, ck, z.subId, z.label);
+    }
+
+    Serial.print("[MQTT] HA calibration discovery ");
+    Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
 static void publishOnlineState() {
     if (!netMqtt_isConnected()) {
         return;
@@ -1654,6 +1964,7 @@ static void publishOnlineState() {
     publishHaDiscoveryWaterQuality();
     publishHaDiscoveryTdsMeter();
     publishHaDiscoveryWqConfig();
+    publishHaDiscoveryCalibration();
     wqConfig_publishState();
     publishM0Status(true, false);
     sessionFlow_republishRecentSessions();
@@ -1771,6 +2082,12 @@ static void handleCmd(const char* payload) {
     if (!doc["set_flow_avg_window"].isNull()) {
         sensorFlow_setFlowAvgWindow((uint8_t)constrain(doc["set_flow_avg_window"].as<int>(), 1, 20));
     }
+    if (!doc["set_sensor_model_1"].isNull()) {
+        sensorFlow_setModel(1, doc["set_sensor_model_1"].as<const char*>());
+    }
+    if (!doc["set_sensor_model_2"].isNull()) {
+        sensorFlow_setModel(2, doc["set_sensor_model_2"].as<const char*>());
+    }
     if (!doc["set_v_min"].isNull()) {
         sensorVoltage_setVMin(doc["set_v_min"].as<float>());
     }
@@ -1836,6 +2153,29 @@ static void handleCmd(const char* payload) {
         actuatorValve_setTimeoutAlert(doc["set_valve_timeout_alert"].as<bool>());
         actuatorValve_saveToNvs();
     }
+
+    // Flow calibration
+    if (!doc["flow_cal_begin"].isNull())  sensorFlow_calBegin(doc["flow_cal_begin"].as<int>());
+    if (!doc["flow_cal_commit"].isNull()) sensorFlow_calCommit(doc["flow_cal_commit"].as<int>());
+    if (!doc["flow_cal_accept"].isNull()) sensorFlow_calAccept(doc["flow_cal_accept"].as<int>());
+    if (!doc["flow_cal_abort"].isNull())  sensorFlow_calAbort(doc["flow_cal_abort"].as<int>());
+    if (!doc["set_cal_ref_vol_1"].isNull()) sensorFlow_setCalRefVol(1, doc["set_cal_ref_vol_1"].as<float>());
+    if (!doc["set_cal_ref_vol_2"].isNull()) sensorFlow_setCalRefVol(2, doc["set_cal_ref_vol_2"].as<float>());
+
+    // TDS calibration
+    if (!doc["set_tds_cal_ref_ec_0"].isNull()) sensorTdsMeter_setCalRefEc(0, doc["set_tds_cal_ref_ec_0"].as<float>());
+    if (!doc["set_tds_cal_ref_ec_1"].isNull()) sensorTdsMeter_setCalRefEc(1, doc["set_tds_cal_ref_ec_1"].as<float>());
+    if (!doc["tds_cal_begin"].isNull())  sensorTdsMeter_calBegin((uint8_t)doc["tds_cal_begin"].as<int>());
+    if (!doc["tds_cal_commit"].isNull()) {
+        uint8_t z = (uint8_t)doc["tds_cal_commit"].as<int>();
+        sensorTdsMeter_calCommit(z, sensorTdsMeter_getCalRefEc(z));
+    }
+    if (!doc["tds_cal_accept"].isNull()) sensorTdsMeter_calAccept((uint8_t)doc["tds_cal_accept"].as<int>());
+    if (!doc["tds_cal_abort"].isNull())  sensorTdsMeter_calAbort((uint8_t)doc["tds_cal_abort"].as<int>());
+    if (!doc["set_tds_pre_ro_ec_cal_factor"].isNull())  sensorTdsMeter_setEcCalFactor(0, doc["set_tds_pre_ro_ec_cal_factor"].as<float>());
+    if (!doc["set_tds_post_ro_ec_cal_factor"].isNull()) sensorTdsMeter_setEcCalFactor(1, doc["set_tds_post_ro_ec_cal_factor"].as<float>());
+    if (!doc["set_tds_pre_ro_cal_date"].isNull())  sensorTdsMeter_setCalDate(0, doc["set_tds_pre_ro_cal_date"].as<const char*>());
+    if (!doc["set_tds_post_ro_cal_date"].isNull()) sensorTdsMeter_setCalDate(1, doc["set_tds_post_ro_cal_date"].as<const char*>());
 }
 
 static const char* DATA_LOG_HEADER =

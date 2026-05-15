@@ -34,6 +34,8 @@
 #define FLOW_K_TABLE_MAX_POINTS     5
 #define FLOW_AVG_WINDOW_MAX         20       // maximum moving average window (runtime configurable 1-20)
 #define FLOW_AVG_WINDOW_DEFAULT     5
+#define FLOW_SENSOR_MODEL_DEFAULT_CH1  "USN-HS06PE"
+#define FLOW_SENSOR_MODEL_DEFAULT_CH2  "USN-HS06PS"
 
 // Session tracking
 #define TOPIC_SESSION               "twwp/" NODE_ID "/session"

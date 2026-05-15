@@ -9,14 +9,43 @@
 #include "time_rtc.h"
 
 static const uint32_t CALC_INTERVAL_MS = 1000UL;
-static const uint32_t DEBOUNCE_US_DEFAULT_CH1 = 1000UL;  // K=5500, safe to ~10.9 L/min
-static const uint32_t DEBOUNCE_US_DEFAULT_CH2 = 500UL;   // K=20700, safe to ~5.8 L/min
-static const uint32_t MIN_PULSES_PER_INTERVAL_CH1 = 1U;  // USN-HS06PE on channel 1
-static const uint32_t MIN_PULSES_PER_INTERVAL_CH2 = 2U;  // USN-HS06PS on channel 2
+static const uint32_t DEBOUNCE_US_DEFAULT_CH1 = 1000UL;
+static const uint32_t DEBOUNCE_US_DEFAULT_CH2 = 500UL;
 
-// Runtime-mutable debounce values (defaults from DEBOUNCE_US_DEFAULT_*)
+// Sensor model registry — add new sensors here
+struct FlowSensorModel {
+    const char* name;
+    float       nominalK;
+    uint32_t    debounceUs;
+    uint32_t    minPulses;
+    FlowKPoint  kTable[FLOW_K_TABLE_MAX_POINTS];
+    int         kTableLen;
+};
+
+// DWS-MH-02: F(Hz) = 15Q − 2, K(pulses/L) = F/Q*60
+// K-table derived from formula at representative RO flow rates (0.3–5.0 L/min)
+static const FlowSensorModel s_sensorModels[] = {
+    {"USN-HS06PE", 5500.0f,  1000, 1, {{0.0f, 5500.0f},  {}, {}, {}, {}}, 1},
+    {"USN-HS06PS", 20700.0f,  500, 2, {{0.0f, 20700.0f}, {}, {}, {}, {}}, 1},
+    {"DWS-MH-02",   780.0f, 1000, 1,
+        {{0.3f, 500.0f}, {0.5f, 660.0f}, {1.0f, 780.0f}, {2.0f, 840.0f}, {5.0f, 876.0f}}, 5},
+};
+static const int s_sensorModelCount = (int)(sizeof(s_sensorModels) / sizeof(s_sensorModels[0]));
+
+static const FlowSensorModel* findModel(const char* name) {
+    for (int i = 0; i < s_sensorModelCount; ++i) {
+        if (strcmp(s_sensorModels[i].name, name) == 0) return &s_sensorModels[i];
+    }
+    return nullptr;
+}
+
+// Runtime-mutable per-channel state (model-derived defaults, overridable from node.json)
 static uint32_t debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
 static uint32_t debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+static uint32_t minPulsesPerIntervalCh1 = 1U;
+static uint32_t minPulsesPerIntervalCh2 = 2U;
+static char s_modelName1[32] = FLOW_SENSOR_MODEL_DEFAULT_CH1;
+static char s_modelName2[32] = FLOW_SENSOR_MODEL_DEFAULT_CH2;
 
 // Runtime-mutable moving average window size (default = 5, max = FLOW_AVG_WINDOW_MAX)
 static uint8_t flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
@@ -123,6 +152,8 @@ static void persistKConfig() {
 
     JsonObject flow = doc["flow"].as<JsonObject>();
     if (flow.isNull()) flow = doc["flow"].to<JsonObject>();
+    flow["sensor_model_1"] = s_modelName1;
+    flow["sensor_model_2"] = s_modelName2;
     flow["k_factor_1"] = nominalK1;
     flow["k_factor_2"] = nominalK2;
 
@@ -230,10 +261,15 @@ static int32_t mondayOf(int32_t unixDay) {
 }
 
 static void loadConfig() {
+    // Step 1: compile-time defaults
+    strlcpy(s_modelName1, FLOW_SENSOR_MODEL_DEFAULT_CH1, sizeof(s_modelName1));
+    strlcpy(s_modelName2, FLOW_SENSOR_MODEL_DEFAULT_CH2, sizeof(s_modelName2));
     nominalK1 = FLOW_K_FACTOR_DEFAULT_CH1;
     nominalK2 = FLOW_K_FACTOR_DEFAULT_CH2;
     debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
     debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+    minPulsesPerIntervalCh1 = 1U;
+    minPulsesPerIntervalCh2 = 2U;
     flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
     setSinglePointTable(kTable1, kTableLen1, nominalK1);
     setSinglePointTable(kTable2, kTableLen2, nominalK2);
@@ -241,14 +277,39 @@ static void loadConfig() {
     JsonDocument doc;
     if (storeSd_readJsonFile(SD_CONFIG_PATH, doc)) {
         JsonObjectConst flow = doc["flow"].as<JsonObjectConst>();
-        float k1 = flow["k_factor_1"] | FLOW_K_FACTOR_DEFAULT_CH1;
-        float k2 = flow["k_factor_2"] | FLOW_K_FACTOR_DEFAULT_CH2;
 
-        if (k1 >= 1.0f) {
-            nominalK1 = k1;
+        // Step 2: apply model defaults (before explicit overrides)
+        const char* m1str = flow["sensor_model_1"] | FLOW_SENSOR_MODEL_DEFAULT_CH1;
+        const char* m2str = flow["sensor_model_2"] | FLOW_SENSOR_MODEL_DEFAULT_CH2;
+        strlcpy(s_modelName1, m1str, sizeof(s_modelName1));
+        strlcpy(s_modelName2, m2str, sizeof(s_modelName2));
+
+        const FlowSensorModel* m1 = findModel(s_modelName1);
+        const FlowSensorModel* m2 = findModel(s_modelName2);
+
+        if (m1) {
+            nominalK1 = m1->nominalK;
+            debounceUsCh1 = m1->debounceUs;
+            minPulsesPerIntervalCh1 = m1->minPulses;
+            memcpy(kTable1, m1->kTable, m1->kTableLen * sizeof(FlowKPoint));
+            kTableLen1 = m1->kTableLen;
         }
-        if (k2 >= 1.0f) {
-            nominalK2 = k2;
+        if (m2) {
+            nominalK2 = m2->nominalK;
+            debounceUsCh2 = m2->debounceUs;
+            minPulsesPerIntervalCh2 = m2->minPulses;
+            memcpy(kTable2, m2->kTable, m2->kTableLen * sizeof(FlowKPoint));
+            kTableLen2 = m2->kTableLen;
+        }
+
+        // Step 3: explicit overrides from node.json take priority over model defaults
+        if (!flow["k_factor_1"].isNull()) {
+            float k1 = flow["k_factor_1"].as<float>();
+            if (k1 >= 1.0f) nominalK1 = k1;
+        }
+        if (!flow["k_factor_2"].isNull()) {
+            float k2 = flow["k_factor_2"].as<float>();
+            if (k2 >= 1.0f) nominalK2 = k2;
         }
 
         if (flow["k_table_1"].is<JsonArrayConst>()) {
@@ -258,35 +319,33 @@ static void loadConfig() {
             kTableLen2 = loadKTableFromJson(flow["k_table_2"].as<JsonArrayConst>(), kTable2);
         }
 
-        // Restore runtime-configurable values
-        uint32_t db1 = flow["debounce_us_1"] | DEBOUNCE_US_DEFAULT_CH1;
-        uint32_t db2 = flow["debounce_us_2"] | DEBOUNCE_US_DEFAULT_CH2;
-        if (db1 >= 100 && db1 <= 10000) debounceUsCh1 = db1;
-        if (db2 >= 100 && db2 <= 10000) debounceUsCh2 = db2;
+        if (!flow["debounce_us_1"].isNull()) {
+            uint32_t db1 = (uint32_t)flow["debounce_us_1"].as<int>();
+            if (db1 >= 100 && db1 <= 10000) debounceUsCh1 = db1;
+        }
+        if (!flow["debounce_us_2"].isNull()) {
+            uint32_t db2 = (uint32_t)flow["debounce_us_2"].as<int>();
+            if (db2 >= 100 && db2 <= 10000) debounceUsCh2 = db2;
+        }
 
-        uint8_t aw = flow["flow_avg_window"] | FLOW_AVG_WINDOW_DEFAULT;
-        if (aw >= 1 && aw <= FLOW_AVG_WINDOW_MAX) flowAvgWindow = aw;
+        if (!flow["flow_avg_window"].isNull()) {
+            uint8_t aw = (uint8_t)flow["flow_avg_window"].as<int>();
+            if (aw >= 1 && aw <= FLOW_AVG_WINDOW_MAX) flowAvgWindow = aw;
+        }
     }
 
-    if (kTableLen1 <= 0) {
-        setSinglePointTable(kTable1, kTableLen1, nominalK1);
-    }
-    if (kTableLen2 <= 0) {
-        setSinglePointTable(kTable2, kTableLen2, nominalK2);
-    }
+    if (kTableLen1 <= 0) setSinglePointTable(kTable1, kTableLen1, nominalK1);
+    if (kTableLen2 <= 0) setSinglePointTable(kTable2, kTableLen2, nominalK2);
 
     appliedK1 = interpolateK(0.0f, kTable1, kTableLen1);
     appliedK2 = interpolateK(0.0f, kTable2, kTableLen2);
 
-    Serial.printf("[FLOW] K1 nominal=%.0f points=%d K2 nominal=%.0f points=%d\n",
-                  nominalK1,
-                  kTableLen1,
-                  nominalK2,
-                  kTableLen2);
-    Serial.printf("[FLOW] debounce ch1=%lu ch2=%lu avgWindow=%u\n",
-                  (unsigned long)debounceUsCh1,
-                  (unsigned long)debounceUsCh2,
-                  flowAvgWindow);
+    Serial.printf("[FLOW] ch1 model=%s K=%.0f pts=%d debounce=%lu minP=%lu\n",
+                  s_modelName1, nominalK1, kTableLen1,
+                  (unsigned long)debounceUsCh1, (unsigned long)minPulsesPerIntervalCh1);
+    Serial.printf("[FLOW] ch2 model=%s K=%.0f pts=%d debounce=%lu minP=%lu avgWin=%u\n",
+                  s_modelName2, nominalK2, kTableLen2,
+                  (unsigned long)debounceUsCh2, (unsigned long)minPulsesPerIntervalCh2, flowAvgWindow);
 }
 
 static void loadTotalsFromSd() {
@@ -431,8 +490,8 @@ void sensorFlow_loop() {
     totalPulses1 += p1;
     totalPulses2 += p2;
 
-    uint32_t meteredP1 = (p1 >= MIN_PULSES_PER_INTERVAL_CH1) ? p1 : 0U;
-    uint32_t meteredP2 = (p2 >= MIN_PULSES_PER_INTERVAL_CH2) ? p2 : 0U;
+    uint32_t meteredP1 = (p1 >= minPulsesPerIntervalCh1) ? p1 : 0U;
+    uint32_t meteredP2 = (p2 >= minPulsesPerIntervalCh2) ? p2 : 0U;
 
     // 1) Push raw flow rate using last cycle's appliedK
     uint8_t sampleSlot1 = pushFlowSample(((float)meteredP1 * 60.0f) / appliedK1,
@@ -639,8 +698,12 @@ void sensorFlow_factoryReset() {
     }
     flowAvgHead1 = flowAvgHead2 = 0;
     flowAvgCount1 = flowAvgCount2 = 0;
+    strlcpy(s_modelName1, FLOW_SENSOR_MODEL_DEFAULT_CH1, sizeof(s_modelName1));
+    strlcpy(s_modelName2, FLOW_SENSOR_MODEL_DEFAULT_CH2, sizeof(s_modelName2));
     debounceUsCh1 = DEBOUNCE_US_DEFAULT_CH1;
     debounceUsCh2 = DEBOUNCE_US_DEFAULT_CH2;
+    minPulsesPerIntervalCh1 = 1U;
+    minPulsesPerIntervalCh2 = 2U;
     flowAvgWindow = FLOW_AVG_WINDOW_DEFAULT;
     appliedK1 = interpolateK(0.0f, kTable1, kTableLen1);
     appliedK2 = interpolateK(0.0f, kTable2, kTableLen2);
@@ -652,6 +715,84 @@ void sensorFlow_factoryReset() {
     forceSdSave();
     logAndPrint("[FLOW] factory reset — all flow data cleared");
 }
+
+// ── Per-channel calibration ─────────────────────────────────────────────────
+
+enum class FlowCalState : uint8_t { IDLE, COLLECTING, DONE };
+
+static FlowCalState calState1    = FlowCalState::IDLE;
+static FlowCalState calState2    = FlowCalState::IDLE;
+static uint64_t     calBasePulses1 = 0, calBasePulses2 = 0;
+static float        calRefVol1   = 0.0f, calRefVol2   = 0.0f;
+static float        calSuggestedK1 = 0.0f, calSuggestedK2 = 0.0f;
+
+void sensorFlow_calBegin(uint8_t ch) {
+    if (ch == 1) {
+        calBasePulses1 = totalPulses1;
+        calState1      = FlowCalState::COLLECTING;
+    } else {
+        calBasePulses2 = totalPulses2;
+        calState2      = FlowCalState::COLLECTING;
+    }
+}
+
+bool sensorFlow_calCommit(uint8_t ch) {
+    FlowCalState& st  = (ch == 1) ? calState1        : calState2;
+    uint64_t&     bp  = (ch == 1) ? calBasePulses1    : calBasePulses2;
+    float&        ref = (ch == 1) ? calRefVol1        : calRefVol2;
+    float&        sug = (ch == 1) ? calSuggestedK1    : calSuggestedK2;
+    uint64_t      cur = (ch == 1) ? totalPulses1      : totalPulses2;
+
+    if (st != FlowCalState::COLLECTING) {
+        Serial.printf("[FLOW] calCommit ch=%d: not collecting\n", ch);
+        return false;
+    }
+    if (ref <= 0.0f) {
+        Serial.printf("[FLOW] calCommit ch=%d: ref vol is zero\n", ch);
+        return false;
+    }
+    uint64_t pulses = cur - bp;
+    sug = (float)pulses / ref;
+    st  = FlowCalState::DONE;
+    return true;
+}
+
+bool sensorFlow_calAccept(uint8_t ch) {
+    FlowCalState& st  = (ch == 1) ? calState1     : calState2;
+    float&        sug = (ch == 1) ? calSuggestedK1 : calSuggestedK2;
+    if (st != FlowCalState::DONE) return false;
+    sensorFlow_setKFactor(ch, sug);
+    st = FlowCalState::IDLE;
+    return true;
+}
+
+void sensorFlow_calAbort(uint8_t ch) {
+    if (ch == 1) calState1 = FlowCalState::IDLE;
+    else         calState2 = FlowCalState::IDLE;
+}
+
+void sensorFlow_setCalRefVol(uint8_t ch, float volL) {
+    if (ch == 1) calRefVol1 = volL;
+    else         calRefVol2 = volL;
+}
+
+const char* sensorFlow_getCalState(uint8_t ch) {
+    FlowCalState st = (ch == 1) ? calState1 : calState2;
+    switch (st) {
+        case FlowCalState::COLLECTING: return "collecting";
+        case FlowCalState::DONE:       return "done";
+        default:                       return "idle";
+    }
+}
+
+float    sensorFlow_getCalSuggestedK(uint8_t ch)      { return ch == 1 ? calSuggestedK1 : calSuggestedK2; }
+uint64_t sensorFlow_getCalPulsesSinceStart(uint8_t ch) {
+    if (ch == 1) return (calState1 == FlowCalState::IDLE) ? 0 : (totalPulses1 - calBasePulses1);
+    return (calState2 == FlowCalState::IDLE) ? 0 : (totalPulses2 - calBasePulses2);
+}
+float    sensorFlow_getCalRefVol(uint8_t ch)           { return ch == 1 ? calRefVol1 : calRefVol2; }
+
+// ────────────────────────────────────────────────────────────────────────────
 
 float sensorFlow_getRateLpm(uint8_t ch)  { return ch == 1 ? flowRate1  : flowRate2; }
 float sensorFlow_getTotalL(uint8_t ch)   { return ch == 1 ? flowTotal1 : flowTotal2; }
@@ -741,6 +882,52 @@ bool sensorFlow_setDebounceUs(uint8_t ch, uint32_t us) {
     flow[ch == 1 ? "debounce_us_1" : "debounce_us_2"] = (unsigned long)us;
     storeSd_writeJsonFile(SD_CONFIG_PATH, doc);
     return true;
+}
+
+bool sensorFlow_setModel(uint8_t ch, const char* model) {
+    const FlowSensorModel* m = findModel(model);
+    if (!m) {
+        Serial.printf("[FLOW] setModel ch=%d: unknown model '%s'\n", ch, model);
+        return false;
+    }
+    if (ch == 1) {
+        strlcpy(s_modelName1, model, sizeof(s_modelName1));
+        nominalK1 = m->nominalK;
+        debounceUsCh1 = m->debounceUs;
+        minPulsesPerIntervalCh1 = m->minPulses;
+        memcpy(kTable1, m->kTable, m->kTableLen * sizeof(FlowKPoint));
+        kTableLen1 = m->kTableLen;
+        appliedK1 = interpolateK(flowRate1, kTable1, kTableLen1);
+    } else if (ch == 2) {
+        strlcpy(s_modelName2, model, sizeof(s_modelName2));
+        nominalK2 = m->nominalK;
+        debounceUsCh2 = m->debounceUs;
+        minPulsesPerIntervalCh2 = m->minPulses;
+        memcpy(kTable2, m->kTable, m->kTableLen * sizeof(FlowKPoint));
+        kTableLen2 = m->kTableLen;
+        appliedK2 = interpolateK(flowRate2, kTable2, kTableLen2);
+    } else {
+        return false;
+    }
+    Serial.printf("[FLOW] ch%d model→'%s' K=%.0f debounce=%lu minP=%lu\n",
+                  ch, model,
+                  ch == 1 ? nominalK1 : nominalK2,
+                  (unsigned long)(ch == 1 ? debounceUsCh1 : debounceUsCh2),
+                  (unsigned long)(ch == 1 ? minPulsesPerIntervalCh1 : minPulsesPerIntervalCh2));
+    persistKConfig();
+    return true;
+}
+
+const char* sensorFlow_getModel(uint8_t ch) {
+    return ch == 1 ? s_modelName1 : s_modelName2;
+}
+
+void sensorFlow_getModelList(char* buf, size_t len) {
+    buf[0] = '\0';
+    for (int i = 0; i < s_sensorModelCount; ++i) {
+        if (i > 0) strlcat(buf, ",", len);
+        strlcat(buf, s_sensorModels[i].name, len);
+    }
 }
 
 bool sensorFlow_setFlowAvgWindow(uint8_t windowSize) {

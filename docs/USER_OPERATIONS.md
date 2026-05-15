@@ -1226,6 +1226,152 @@ Or check the MQTT status payload — calibration date fields are always present 
 
 ---
 
+## Sensor Calibration Playbook
+
+All calibration workflows are available through Home Assistant or MQTT. No USB connection needed.
+
+---
+
+### Flow Sensor K-Factor Calibration
+
+Use this when you replace a flow sensor or when measured volume doesn't match HA readings. Works per channel (ch 1 = purified output, ch 2 = raw input).
+
+**What you need:** A clean container with a known volume mark (e.g. a 4 L or 10 L bucket, or any container you've weighed on a scale — 1 kg water = 1 L).
+
+**Procedure:**
+
+1. In HA, find the **Output Cal Reference Volume** (or Input) number entity and set it to your container volume in litres (e.g. `5.0`).
+2. Click the **Start Output Flow Cal** button. The `cal_state_1` sensor changes to `collecting`.
+3. Open the tap and fill your container exactly to the mark. Close the tap.
+4. Click **Commit Output Flow Cal**. The `cal_state_1` sensor changes to `done` and **Output Cal Suggested K** shows the computed value.
+5. Check the suggested K is reasonable (flow sensor range is typically 500–25000 pulses/L). If it looks right, click **Accept Output Cal K**. If something went wrong, click **Abort Output Flow Cal** — the old K is unchanged.
+
+The new K factor is immediately applied and persisted to `/config/node.json` on the SD card.
+
+**MQTT equivalent:**
+
+```bash
+# Step 1 — set reference volume
+mosquitto_pub -h twwp-iot.duckdns.org -p 8883 --capath /etc/ssl/certs \
+  -u twwp_wh_001 -P <PASS> -t 'twwp/wh_001/cmd' \
+  -m '{"set_cal_ref_vol_1": 5.0}'
+
+# Step 2 — start
+mosquitto_pub ... -m '{"flow_cal_begin": 1}'
+
+# Step 3 — after filling container: commit
+mosquitto_pub ... -m '{"flow_cal_commit": 1}'
+
+# Step 4 — accept (or abort)
+mosquitto_pub ... -m '{"flow_cal_accept": 1}'
+# mosquitto_pub ... -m '{"flow_cal_abort": 1}'
+```
+
+Replace `1` with `2` for channel 2.
+
+**Status fields published after cal start:**
+
+| Field | Description |
+|---|---|
+| `cal_state_1` / `cal_state_2` | `idle` / `collecting` / `done` |
+| `cal_ref_vol_1` / `cal_ref_vol_2` | Reference volume set (L) |
+| `cal_pulses_since_start_1` / `_2` | Raw pulses counted since cal start |
+| `cal_suggested_k_1` / `_2` | Computed K (pulses/L) — only meaningful when `done` |
+
+---
+
+### Pre-RO and Post-RO EC/TDS Calibration
+
+The EC and TDS readings from the Pre-RO and Post-RO probes come from the external WROOM-32 EC meter via RS485. A software correction factor is applied on the ESP32 side, so calibration can be done through HA without touching the WROOM-32 module.
+
+**Standard solutions:** Use a certified calibration solution — 1413 µS/cm is the most common for potable water range. Have a calibrated reference meter (handheld TDS pen or EC meter) to verify.
+
+**Procedure (single-point correction):**
+
+1. Measure the actual EC of the water at the probe location using a trusted reference meter. Note the value in µS/cm.
+2. In HA, set **Pre-RO Cal Reference EC** to that value (in µS/cm).
+3. Click **Start Pre-RO EC Cal**. The `tds_pre_ro_cal_state` sensor changes to `active`.
+4. Click **Commit Pre-RO EC Cal** immediately (takes the current live EC reading at that moment as the "raw" probe reading).
+5. **Pre-RO Cal Suggested Factor** shows the correction factor = reference / raw. A value of 1.0 means no correction needed. Values between 0.7 and 1.5 are typical.
+6. Click **Accept Pre-RO EC Cal** to save. The factor is applied to all subsequent EC and TDS readings from that zone.
+
+If the probe is in-line and you can't easily get a reference measurement at that point, use a sample of the same water measured with a handheld meter.
+
+**MQTT equivalent:**
+
+```bash
+# Set reference EC (µS/cm)
+mosquitto_pub ... -m '{"set_tds_cal_ref_ec_0": 1413.0}'
+
+# Start — zone 0=Pre-RO, zone 1=Post-RO
+mosquitto_pub ... -m '{"tds_cal_begin": 0}'
+
+# Commit (uses stored ref EC)
+mosquitto_pub ... -m '{"tds_cal_commit": 0}'
+
+# Accept or abort
+mosquitto_pub ... -m '{"tds_cal_accept": 0}'
+# mosquitto_pub ... -m '{"tds_cal_abort": 0}'
+```
+
+**Directly set the cal factor without wizard (if you already know it):**
+
+```bash
+mosquitto_pub ... -m '{"set_tds_pre_ro_ec_cal_factor": 1.178}'
+mosquitto_pub ... -m '{"set_tds_post_ro_ec_cal_factor": 0.950}'
+```
+
+**Record calibration date:**
+
+```bash
+mosquitto_pub ... -m '{"set_tds_pre_ro_cal_date": "2026-05-15"}'
+mosquitto_pub ... -m '{"set_tds_post_ro_cal_date": "2026-05-15"}'
+```
+
+**Status fields:**
+
+| Field | Description |
+|---|---|
+| `tds_pre_ro_ec_raw` | Raw EC from WROOM-32 before correction (µS/cm) |
+| `tds_pre_ro_ec` | Calibrated EC = raw × cal factor |
+| `tds_pre_ro_ppm` | Calibrated TDS = calibrated EC × 0.5 |
+| `tds_pre_ro_ec_cal_factor` | Current correction factor (default 1.0) |
+| `tds_pre_ro_cal_state` | `idle` / `active` / `done` |
+| `tds_pre_ro_cal_suggested_factor` | Computed factor (only meaningful when `done`) |
+| `tds_pre_ro_cal_date` | ISO date of last calibration |
+
+Repeat with `post_ro` prefix for the Post-RO zone.
+
+---
+
+### Remineralised Zone (Yieryi 3788) — Physical Calibration
+
+The Yieryi 3788 meter calibrates itself via its physical buttons. The ESP32 does not send calibration commands — it only reads the result.
+
+**pH (2-point):** Use pH 4.00 and pH 7.00 buffer solutions. Follow the Yieryi menu. After calibration, verify against a fresh buffer — should read within ±0.05.
+
+**ORP:** Immerse in Zobell solution (~+220 mV) or quinhydrone. Follow the Yieryi menu.
+
+**EC:** Use 1413 µS/cm KCl standard. Follow the Yieryi menu.
+
+After physical calibration, record the date in HA (or via MQTT):
+
+```bash
+mosquitto_pub ... -m '{
+  "set_wq_remin_ph_cal_date":  "2026-05-15",
+  "set_wq_remin_orp_cal_date": "2026-05-15",
+  "set_wq_remin_ec_cal_date":  "2026-05-15"
+}'
+```
+
+---
+
+### Battery Voltage Calibration
+
+See the **Battery Voltage Monitor** section. Short version: measure battery with a multimeter, divide by HA reading, set **Battery Voltage Cal Factor** in HA.
+
+---
+
 ## Water Quality Meter — node.json Configuration
 
 Optional runtime config in `/config/node.json` under the `water_quality` key:
