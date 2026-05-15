@@ -73,6 +73,8 @@ K value loaded from `/config/node.json` (`flow.k_factor_1`, `flow.k_factor_2`) �
 - [x] Update `docs/PIN_ALLOCATION.md` — mark GPIO4/5 confirmed for flow sensors.
 - [x] **Flow sensor firmware improvements** — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing (configurable 1–20 samples), uint64_t raw pulse totals as authoritative volume source, configurable debounce (100–10000 µs) per channel, NVS + SD persistence of raw pulses, HA discovery for diagnostics (`pulses_raw`, `k_applied`, `flow_avg_window`) and config entities (K-table text, debounce number, avg window number), backward-compatible with single K-factor config. See [`plans/flow-sensor-improvements.md`](plans/flow-sensor-improvements.md).
 - [x] **Session timing fields** — `flow_dur_s` (actual flow time, excludes idle gaps) and `idle_s` (tap-off gaps within session) added to session_flow driver, all session payloads (MQTT event, sessions_recent array, status heartbeat), HA discovery sensors, and SD sessions.csv log. HA Markdown card template provided for session list display.
+- [x] **Flow sensor model registry** — compile-time registry of known sensors (USN-HS06PE, USN-HS06PS, DWS-MH-02). Model selectable per channel via HA `select` entity or MQTT cmd `set_sensor_model_1/2`. Applying a model loads its K-table, debounce, and minPulses defaults. DWS-MH-02 includes 5-point K-table derived from its F=15Q−2 formula for accurate low-flow measurement. Node.json key: `flow.sensor_model_1/2`. Explicit k_factor/k_table/debounce in node.json still override model defaults.
+- [x] **Flow K-factor calibration wizard** — per-channel begin/commit/accept/abort state machine. Set reference volume → Start Cal → fill container → Commit → see suggested K → Accept. MQTT status fields: `cal_state_1/2`, `cal_suggested_k_1/2`, `cal_pulses_since_start_1/2`, `cal_ref_vol_1/2`. HA entities: 2 buttons + 1 number + 1 sensor per channel. Full playbook in `USER_OPERATIONS.md`.
 
 ---
 
@@ -197,19 +199,19 @@ Standalone ESP32-WROOM-32 + ADS1115 EC/TDS meter transmitting `$WM,...` ASCII fr
 - [x] Native unit tests: 22 tests (11 mux + 11 TDS parser) — `pio test -e native` all pass. `[env:native]` added to `platformio.ini`. Stubs in `test/stubs/`.
 - [x] **Phase 2 bench test (2026-05-12)**: `[TDS] P1/P2` frames confirmed every ~3s. HA receiving all 6 TDS entities with real values. YiErYi water quality also present — bus coexistence confirmed. No SD failure alerts.
 - [x] `docs/USER_OPERATIONS.md` updated: serial monitor receive-only, SD silent writes, HWCDC JSON truncation, DI/RO wiring gotcha, TDS calibration note.
+- [x] **TDS probe calibration** — Software EC correction factor per zone (NVS persisted, default 1.0). Wizard: set ref EC → begin → commit (snapshots raw EC) → shows suggested factor → accept/abort. Direct set also available. Raw EC exposed alongside calibrated EC/ppm. Full playbook in `USER_OPERATIONS.md`. MQTT cmd keys: `tds_cal_begin/commit/accept/abort`, `set_tds_cal_ref_ec_0/1`, `set_tds_pre_ro/post_ro_ec_cal_factor`, `set_tds_pre_ro/post_ro_cal_date`.
 - [ ] **Grafana panels**: TDS fields reach InfluxDB via HA but dashboard panels not yet created (part of Grafana dashboards task in M5 above).
-- [ ] **TDS probe calibration**: EC×0.5 factor is fixed in firmware. Absolute accuracy requires calibrating the WROOM-32 EC/TDS meter with standard solutions via vendor software.
 
 **Wiring note:** WROOM-32 RS485 module DI (Data In = TX from MCU) and RO (Receiver Output = RX to MCU) were swapped on first bench attempt. Correct wiring: DI→TX pin, RO→RX pin of WROOM-32.
 
 ---
 
-## M7 — HealthService + CalibrationService
+## M7 — HealthService
 
-- [ ] `src/services/HealthService.{h,cpp}`: validates `SensorData`, sets `flow_ok`, `pressure_ok`, `power_ok`.
-- [ ] `src/services/CalibrationService.{h,cpp}`: loads from `node.json` calibration block.
-- [ ] Extend `SensorData` struct — apply calibration in drivers, never raw values in MQTT payload.
-- [ ] Document field calibration in `docs/CALIBRATION.md`.
+Note: CalibrationService is superseded — calibration is now handled per-driver (flow K-factor wizard in `sensor_flow.cpp`, EC correction factor in `sensor_tds_meter.cpp`) with full HA and MQTT integration. No separate CalibrationService needed.
+
+- [ ] `src/services/HealthService.{h,cpp}`: validates sensor readings, sets `flow_ok`, `pressure_ok`, `power_ok` flags — published in status and surfaced as HA binary sensors.
+- [ ] Extend `SensorData` struct — single authoritative snapshot per loop tick rather than ad-hoc reads in MQTT publish path.
 
 ---
 
