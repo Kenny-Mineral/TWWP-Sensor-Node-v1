@@ -3,15 +3,15 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
-### Session 2026-05-15 — OLED display driver implemented and confirmed working
+### Session 2026-05-15 — WQ summary OLED frame, HA-configurable thresholds, OTA fixes
 
-**Scope:** Implemented `src/display_oled.cpp/h` — 7-frame sliding carousel (Pre-RO, Post-RO, Remin, Flow & Waste, Storage Tank, Filter Health stub, Branding), persistent header overlay (today's volume, leak alert, WiFi/MQTT status), tactile button on GPIO10. Pre-RO/Post-RO frames use TDS meter data; Remin uses Yieryi. Added ThingPulse OLED library to `platformio.ini`. Wired and confirmed working on hardware.
+**Scope:** Added WQ Summary OLED frame replacing Pre-RO/Post-RO slides — shows all 3 filter positions (name, TDS ppm, status label) on one slide. New `wq_config` module owns NVS-persisted thresholds, zone names, and status labels; 16 HA entities (5 number + 11 text) published via MQTT discovery. Header updated to RTC time + live session volume. Added `restart_device` MQTT command + HA button (deferred 2s restart). Fixed OTA stuck-in-FAILED state so MQTT retries work without a physical reboot. Confirmed OTA working end-to-end — firmware deployed and running on hardware.
 
 **Key findings:**
-- SH1.0 sockets carry no power rail — OLED VCC/GND must come from internal 2×12 header
-- SH1.0 GPIO1/GPIO2 had no pull-ups adequate for I²C — OLED moved to main Wire bus (GPIO9/GPIO3, shared with DS3231/ADS1115, no address conflict)
-- OLED I²C address confirmed 0x3C
-- Screen orientation: `s_disp.flipScreenVertically()` required for this mounting
+- `setSocketOption fail on 0, errno: 9` during OTA is a benign ESP32 TLS cleanup warning — OTA succeeds despite the log line
+- OTA success pattern: socket error logged → ~97s download → ASSOC_LEAVE → rst:0xc (ESP.restart()) → new firmware boots
+- wq_config NVS NOT_FOUND errors on first boot are expected — defaults load correctly, `[WQ_CFG] loaded` confirms it
+- OTA state machine previously stuck in FAILED after any error, blocking retries — fixed with FAILED→IDLE reset in `netOta_beginUpdate()`
 
 ---
 
@@ -20,12 +20,10 @@ none
 
 ## Next step
 
-M2 bench test — or continue with M3 valve hardware bench test (9 verification checks in previous SESSION.md) when valve hardware arrives.
-
-First unchecked task: M2 — Confirm pressure transducer model + PSI range with user before ordering.
+M2 — Confirm pressure transducer model + PSI range with user before ordering.
 
 ## Tool last used
 claude-code
 
 ## Updated
-2026-05-15 18:00
+2026-05-15 22:30
