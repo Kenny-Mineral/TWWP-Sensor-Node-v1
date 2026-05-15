@@ -666,6 +666,11 @@ void netOta_loop() {
 }
 
 bool netOta_beginUpdate(const char* url, const char* md5Expected) {
+    if (otaState == OtaState::FAILED) {
+        // Previous attempt failed — reset so a retry cmd can be accepted
+        clearError();
+        setState(OtaState::IDLE);
+    }
     if (otaState != OtaState::IDLE) {
         setError("OTA busy");
         return false;
