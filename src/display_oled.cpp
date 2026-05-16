@@ -9,6 +9,7 @@
 #include "sensor_tds_meter.h"
 #include "sensor_leak.h"
 #include "net_wifi.h"
+#include "net_ap.h"
 #include "net_mqtt.h"
 #include "store_sd.h"
 #include "sensor_voltage.h"
@@ -365,6 +366,28 @@ static void handleButton() {
     }
 }
 
+static void drawUploadMode() {
+    char buf[32];
+    uint32_t expires = netAp_getExpiresS();
+    uint32_t mins = expires / 60;
+    uint32_t secs = expires % 60;
+
+    s_disp.clear();
+    s_disp.setTextAlignment(TEXT_ALIGN_LEFT);
+    s_disp.setFont(ArialMT_Plain_16);
+    s_disp.drawString(0, 0, "UPLOAD MODE");
+    s_disp.setFont(ArialMT_Plain_10);
+    snprintf(buf, sizeof(buf), "SSID: %s", netAp_getSsid());
+    s_disp.drawString(0, 20, buf);
+    s_disp.drawString(0, 32, "IP: 192.168.4.1");
+    snprintf(buf, sizeof(buf), "T: %lum %02lus", static_cast<unsigned long>(mins),
+             static_cast<unsigned long>(secs));
+    s_disp.drawString(0, 44, buf);
+    snprintf(buf, sizeof(buf), "Clients: %u", static_cast<unsigned>(netAp_getClientCount()));
+    s_disp.drawString(0, 56, buf);
+    s_disp.display();
+}
+
 // ── Public interface ───────────────────────────────────────────────────────
 bool displayOled_begin() {
     s_prefs.begin("oled", true);
@@ -410,6 +433,11 @@ void displayOled_loop() {
     if (!s_ready) return;
     updateTankLevel();
     handleButton();
+    if (netAp_isActive()) {
+        drawUploadMode();
+        saveTankIfDue();
+        return;
+    }
     s_ui.update();
     saveTankIfDue();
 }

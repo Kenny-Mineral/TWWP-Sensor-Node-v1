@@ -8,6 +8,7 @@
 #include "watchdog.h"
 
 static WiFiManager wifiManager;
+static unsigned long wifiConnectedSinceMs = 0;
 
 static String makeApName() {
     uint64_t mac = ESP.getEfuseMac();
@@ -58,12 +59,14 @@ bool netWifi_begin() {
     if (!ok) {
         Serial.println("[WiFi] provisioning failed or timed out");
         statusLed_setState(LedState::ERROR);
+        wifiConnectedSinceMs = 0;
         return false;
     }
 
     Serial.print("[WiFi] connected, IP=");
     Serial.println(WiFi.localIP().toString());
     statusLed_setState(LedState::ONLINE);
+    wifiConnectedSinceMs = millis();
     return true;
 }
 
@@ -71,8 +74,13 @@ void netWifi_loop() {
     static unsigned long lastReconnect = 0;
 
     if (WiFi.status() == WL_CONNECTED) {
+        if (wifiConnectedSinceMs == 0) {
+            wifiConnectedSinceMs = millis();
+        }
         return;
     }
+
+    wifiConnectedSinceMs = 0;
 
     unsigned long now = millis();
     if (now - lastReconnect < 5000) return;
@@ -93,6 +101,7 @@ void netWifi_loop() {
         Serial.print("[WiFi] reconnected, IP=");
         Serial.println(WiFi.localIP().toString());
         statusLed_setState(LedState::ONLINE);
+        wifiConnectedSinceMs = millis();
     } else {
         Serial.println("[WiFi] reconnect attempt failed");
         statusLed_setState(LedState::WIFI_CONNECTING);
@@ -114,4 +123,11 @@ void netWifi_resetCredentials() {
     WiFi.disconnect(true, true);
     delay(500);
     ESP.restart();
+}
+
+uint32_t netWifi_getConnectedUptimeS() {
+    if (WiFi.status() != WL_CONNECTED || wifiConnectedSinceMs == 0) {
+        return 0;
+    }
+    return static_cast<uint32_t>((millis() - wifiConnectedSinceMs) / 1000UL);
 }

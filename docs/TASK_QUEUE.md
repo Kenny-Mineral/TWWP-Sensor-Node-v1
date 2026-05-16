@@ -63,7 +63,7 @@ K value loaded from `/config/node.json` (`flow.k_factor_1`, `flow.k_factor_2`) �
 - [x] Confirm part number. USN-HS06PE (K=38) and USN-HS06PS (K=200).
 - [x] Replace `sensor_flow_stub.{h,cpp}` with `sensor_flow.{h,cpp}`.
   - Interrupt-driven pulse counter on GPIO4 (flow #1) and GPIO5 (flow #2).
-  - Load K factor from `node.json`; default 38 if absent.
+  - Load K factor from `node.json`; default 1000 if absent.
   - Expose: `sensorFlow_getRateLpm(uint8_t ch)`, `sensorFlow_getTotalL(uint8_t ch)`, plus today/week/month/year subtotals and `sensorFlow_getKFactor(uint8_t ch)`.
   - Two-layer persistence: NVS (Preferences) every 10 s, SD `/config/flow_total.json` every 60 s.
 - [x] HA discovery: `flow_rate` (`measurement`, `L/min`), `flow_total` (`total_increasing`, `L`), today/week/month/year (`measurement`, `L`), and K factor (diagnostic) per channel.
@@ -220,6 +220,177 @@ Note: CalibrationService is superseded — calibration is now handled per-driver
 - [ ] `src/services/AlertService.{h,cpp}`: fires on state change only. Types: LEAK_DETECTED, FLOW_ANOMALY, PRESSURE_OUT_OF_RANGE, LOW_VOLTAGE, SENSOR_FAILURE, DEVICE_REBOOT.
 - [ ] `src/services/TelemetryService.{h,cpp}`: sends snapshot to `twwp/<id>/status` every 10s.
 - [ ] Main loop order: `healthService → alertService → ruleEngine → telemetryService`.
+
+---
+
+## M8.5 — MQTT Data Usage Optimization
+
+Current heartbeat generates ~465 MB/month (status @ 10s interval + sessions). Investigate and optimize data footprint if network constraints require it.
+
+- [ ] **Audit status payload size** — parse actual JSON from serial monitor, measure compressed size via gzip. Identify low-value diagnostic fields that could be moved to on-demand queries or removed entirely.
+- [ ] **Evaluate heartbeat interval trade-off** — test 30s interval (reduces to ~155 MB/month). Measure HA responsiveness impact (valve trigger, leak detection latency). Config: `HEARTBEAT_INTERVAL_MS` in `include/config.h`.
+- [ ] **Selective field updates** — publish only changed fields in status heartbeat rather than full JSON snapshot (requires delta tracking). Higher complexity; defer unless data usage is blocking.
+- [ ] **Session batching** — if water treatment cycles are frequent, consider grouping session-end publishes (e.g., buffer 5 sessions, publish batch). Trade-off: HA real-time visibility vs. lower MQTT traffic.
+- [ ] **Compression candidate** — if broker supports compressed payloads (rare), evaluate gzip before publish.
+
+**Baseline for reference:** 1.8 KB/10s heartbeat + ~2.5 KB sessions per cycle. Monthly: ~465 MB (status only).
+
+---
+
+## M-Upload — Mobile Offline Buffer Upload
+
+Field users can push buffered node data via phone without WiFi. Phone uses its own internet (cellular) to relay buffered MQTT messages to the server via HTTPS. Triggered by QR code or app button.
+
+### M-Upload.1 — Firmware: Concurrent WiFi AP + HTTP Server
+
+Concurrent STA+AP: node stays connected to home WiFi (or offline) while broadcasting its own AP for phones to join. HTTP server on AP interface exposes buffer management API.
+
+- [x] **New module `src/net_ap.{h,cpp}`** — WiFi AP management + HTTP server:
+  - `netAp_begin()` — initializes AP SSID from secrets.h (`AP_SSID`), password from `AP_PASS`.
+  - `netAp_start(duration_s)` — activates AP for N seconds, then auto-deactivates.
+  - `netAp_isActive()` — returns true while AP is broadcasting.
+  - HTTP server starts when AP is active, stops when it deactivates.
+  - Call `netAp_loop()` in main loop to handle timer expiry.
+
+- [x] **HTTP server endpoints (port 80):**
+  - `GET /` → serves upload page (from SD `/config/upload.html` or PROGMEM fallback).
+  - `GET /api/buffer/stats` → JSON: `{"count": N, "oldest_ts": ..., "newest_ts": ..., "est_bytes": N}`.
+  - `GET /api/buffer/fetch?count=N` → JSON array of N oldest buffer messages.
+  - `POST /api/buffer/ack` body `{"count": N}` → deletes N oldest files from `/buf/`.
+
+- [x] **MQTT trigger:** Handle `{"start_ap": true, "duration_s": 300}` on `twwp/<id>/cmd` → calls `netAp_start()`.
+
+- [x] **Automatic AP trigger on WiFi loss:** Track WiFi connectivity state. If:
+  - WiFi STA disconnected for > `AP_AUTO_TRIGGER_LOSS_MS` (default 60s, configurable in `node.json` as `ap.auto_trigger_loss_s`), OR
+  - WiFi RSSI weak (< `AP_AUTO_TRIGGER_RSSI_THRESHOLD` dBm, default -75, also in `node.json` as `ap.weak_rssi_threshold`)
+  - Then automatically activate AP for `AP_AUTO_DURATION_S` (default 600s = 10 min, also configurable).
+  - Reset the timer if WiFi reconnects with strong signal.
+  - Log to SD: `[AP] auto-triggered: wifi loss` or `[AP] auto-triggered: weak signal`.
+
+- [x] **Heartbeat fields:** Add `ap_active`, `ap_ssid`, `ap_clients`, `ap_expires_s`, `wifi_rssi`, `wifi_uptime_s` to status JSON.
+
+- [x] **Config constants** (`include/config.h`):
+  - `AP_BROADCAST_SSID` format: `"twwp-" NODE_ID` (e.g., `twwp-wh_001`).
+  - `AP_DEFAULT_DURATION_S` = 300 (manual trigger).
+  - `AP_AUTO_DURATION_S` = 600 (automatic trigger on WiFi loss/weak signal).
+  - `AP_AUTO_TRIGGER_LOSS_MS` = 60000 (1 min default, configurable via `node.json`).
+  - `AP_AUTO_TRIGGER_RSSI_THRESHOLD` = -75 dBm (configurable via `node.json`).
+  - `AP_PORT` = 80.
+  - `AP_GATEWAY_IP` = 192.168.4.1 (ESP32 default, no change needed).
+
+- [x] **secrets.h.sample:** Add `AP_SSID` and `AP_PASS` placeholders.
+
+- [x] **Library selection:** Confirm ESPAsyncWebServer or Arduino WebServer available in `platformio.ini`. Add if missing.
+  - Implemented with core `WebServer`; `pio run` confirms it links in the current toolchain.
+
+### M-Upload.2 — Relay Server: HTTPS Upload Endpoint (Hetzner VPS)
+
+Server-side service receives batched messages from phones and publishes to MQTT broker.
+
+- [x] **Location:** `/home/kenny/twwp-monitoring/` in this local workspace (server deploy target may still be `/home/kenny/projects/twwp-monitoring/` on the VPS).
+
+- [x] **New service in docker-compose.yml:**
+  - Image: Python 3.11 + FastAPI (or Node.js + Express).
+  - Internal port: 8000.
+  - Environment: `MQTT_BROKER=mosquitto`, `MQTT_USER`, `MQTT_PASS`.
+  - No external port — proxied by nginx.
+  - Implemented as `relay-service` in `/home/kenny/twwp-monitoring/docker-compose.yml`, bound to `127.0.0.1:8000` for nginx-only access.
+
+- [x] **Endpoint:** `POST /api/v1/node-upload`
+  - Request: `{"node_id": "wh_001", "token": "...", "messages": [{"t": "topic", "p": "payload"}, ...], "uploader_email": "optional@email.com"}`
+  - `uploader_email` is optional — may be null or absent (anonymous/skipped).
+  - Response: `{"published": N, "failed": 0}` or error if token invalid.
+  - Auth: Bearer token per node (stored in `/config/upload_token.json` on node SD, embedded in web page).
+  - Implemented in `/home/kenny/twwp-monitoring/upload-relay/app.py`.
+
+- [x] **CRM lead capture:** On each request, append one row to `/data/upload_leads.csv` on the server: `{timestamp, node_id, messages_count, uploader_email_or_blank}`. This is the source of truth for manual CRM outreach. TODO (future): POST email to Mailchimp/Brevo or TWWP Rails app user model.
+
+- [x] **MQTT publish:** Service connects to Mosquitto using `twwp_relay` account (add to `passwordfile`). Publishes each message with QoS 0, not retained.
+  - Implemented with TLS MQTT env vars in `.env.example`; still needs live credentials and runtime deployment verification.
+
+- [ ] **nginx routing:** Add location block `^/api/v1/node-upload` → proxy to `http://relay-service:8000`. Keep existing TLS.
+  - Sample config added to `/home/kenny/twwp-monitoring/docs/SETUP.md`; not deployed or verified from this workspace.
+
+- [x] **Rate limiting:** Max 500 messages per request, max 1 request per node per minute. Return 429 if exceeded.
+
+- [x] **Token rotation command:** MQTT `{"rotate_upload_token": true}` generates new token, writes to `/config/upload_token.json`, publishes to `twwp/<id>/status`.
+
+### M-Upload.3 — Web Page: Self-Contained Upload UI
+
+Single HTML file served from node. Two flows in one page: anonymous (QR scanner) and member (came via Tap-Map app). Doubles as a TWWP onboarding touchpoint.
+
+- [x] **Location:** `/config/upload.html` on SD card (loaded by HTTP server).
+
+- [x] **PROGMEM fallback:** Embed inline HTML in `net_ap.cpp` as a string literal if SD fails.
+
+- [x] **Anonymous flow** (no URL params — arrived by scanning QR code):
+  1. Load → `GET /api/buffer/stats` → display buffer summary with TWWP branding and node ID.
+  2. Batch selector: Last 10 / 50 / 100 / All (capped to 500).
+  3. **Optional email capture:** "Help TWWP track this upload — enter your email" + skip button. Not a gate — upload proceeds either way.
+  4. "Download from node" button → `GET /api/buffer/fetch?count=N` → JS stores in memory.
+  5. Reconnect prompt → detect `navigator.onLine` → enable Upload button.
+  6. `POST https://twwp-iot.duckdns.org/api/v1/node-upload` with auth token + optional email.
+  7. On success → `POST /api/buffer/ack` → SD buffer cleared.
+  8. **Onboarding prompt:** "Thank you! Want free access to TWWP water? [Create account →]" linking to `https://app.thewholeywaterproject.com/users/sign_up`.
+  - Firmware-side page implemented. End-to-end browser upload still depends on relay-side CORS / upload endpoint work in M-Upload.2.
+
+- [x] **Member flow** (URL param `?member=1` — deeplinked from Tap-Map app after joining node WiFi):
+  - Skip email capture (member already identified server-side by the app action that triggered the AP).
+  - Header: "Syncing [Node ID] data for TWWP" (shorter, less introductory).
+  - Same download → reconnect → upload → ack steps.
+  - No onboarding prompt at end (already a member).
+
+- [x] **Design constraints:**
+  - Single HTML file (no external dependencies, no CDN calls — phone may have poor signal after joining AP).
+  - All CSS/JS inline. TWWP brand colors (blue/teal tones matching `thewholeywaterproject.com`).
+  - Works on iOS Safari and Android Chrome.
+  - Node ID and firmware version in header (from stats endpoint response).
+  - Upload token from stats endpoint or embedded at page serve time (not hardcoded in PROGMEM version).
+
+### M-Upload.4 — QR Code + OLED Display State
+
+Physical QR code and OLED update when AP is active.
+
+- [ ] **QR content:** WiFi standard format: `WIFI:T:WPA;S:twwp-wh_001;P:<AP_PASS>;;`
+  - Generated offline, printed on laminated label (near tap or on device sticker).
+  - Below QR: "After joining WiFi, open browser: 192.168.4.1"
+  - Node ID in human text.
+
+- [x] **OLED state (in `src/display_oled.cpp`):**
+  - When `netAp_isActive()` = true, show new display mode:
+    - Line 1: "UPLOAD MODE"
+    - Line 2: `SSID: twwp-wh_001`
+    - Line 3: `IP: 192.168.4.1`
+    - Line 4: Countdown `T: 4m 32s`
+  - Refresh countdown every second (or every 10s for power saving).
+
+- [ ] **Optional: QR code on OLED** — Evaluate U8g2 library QR support. If 128×64 resolution is sufficient for a scannable code, render WiFi QR dynamically. Otherwise, text-only display as above.
+
+- [ ] **App integration:** User's web app has "Sync node data" button → sends `{"start_ap": true, "duration_s": 300}` to `twwp/<id>/cmd`. App shows "AP active. Scan QR on the node or at 192.168.4.1."
+
+- [ ] **Physical button trigger (placeholder):** Long-press `PIN_RESET_CREDS` or dedicate a new GPIO. Resolve with `PIN_ALLOCATION.md` — check GPIO conflicts. If conflict exists, document resolution (different timing duration or new GPIO).
+
+### M-Upload.5 — Tap-Map App Integration (Rails)
+
+**Rails app side only** (`app.thewholeywaterproject.com`). Enables members to trigger the upload flow from the web app without needing to be physically at the tap first.
+
+- [ ] **"Sync offline data" button** on the waterhouse/tap detail page:
+  - Visible when: `mqtt_buffer_count > 0` from the node's most recent heartbeat (surfaced via HA → Rails API, or direct MQTT subscribe in backend).
+  - Greyed out when: `ap_active: true` (AP already running — avoid double-trigger).
+  - Hidden when: node is online and buffer is empty.
+
+- [ ] **Button action:** POST to `/waterhouses/:id/sync` (new Rails controller action):
+  - Publishes `{"start_ap": true, "duration_s": 300}` to `twwp/<node_id>/cmd` via MQTT from the Rails backend.
+  - MQTT client option: `ruby-mqtt` gem or a lightweight sidecar service. **Confirm approach with Tap-Map app architect before implementing** — backend may already have an MQTT publish path.
+
+- [ ] **App UX after trigger:**
+  - Toast: "AP active for 5 minutes — head to the tap and scan the QR code."
+  - Show deeplink button: "Open upload portal →" → links to `http://192.168.4.1/?member=1`.
+  - Note shown: "First connect your phone to the tap's WiFi network (twwp-[node_id]), then open the link."
+
+- [ ] **Status badge on tap card / detail page:**
+  - "Last synced: X minutes ago" — from the relay server's `upload_leads.csv` (last row for this node_id) or a dedicated MQTT event.
+  - "N messages pending sync" when buffer is non-empty.
 
 ---
 

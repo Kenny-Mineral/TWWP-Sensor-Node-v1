@@ -382,6 +382,52 @@ Pruning only applies to valid dated log files such as:
 
 It does not remove `/buf` offline MQTT queue files or undated logs like `unsynced.csv`.
 
+## Offline Upload Portal
+
+The node now supports a local AP + upload portal for relaying buffered MQTT messages through a phone.
+
+### How to trigger it
+
+- MQTT command: publish `{"start_ap": true, "duration_s": 300}` to `twwp/<node_id>/cmd`.
+- Automatic trigger: if STA WiFi stays disconnected for more than `ap.auto_trigger_loss_s` seconds, or stays weaker than `ap.weak_rssi_threshold` dBm for that same window, the node auto-starts the AP for the configured duration.
+
+### What the node does
+
+- Broadcasts SSID `twwp-<node_id>` by default.
+- Uses `AP_PASS` from `include/secrets.h` if defined; otherwise falls back to `wateriswet`.
+- Serves the portal at `http://192.168.4.1/`.
+- Shows an `UPLOAD MODE` screen on the OLED while the AP is active.
+- Exposes local endpoints:
+  - `GET /api/buffer/stats`
+  - `GET /api/buffer/fetch?count=N`
+  - `POST /api/buffer/ack`
+
+### Operator files on SD
+
+- `/config/upload.html`
+  - Optional custom portal page served instead of the built-in fallback HTML.
+- `/config/upload_token.json`
+  - Per-node relay token used by the phone upload page.
+  - Rotate it via MQTT command `{"rotate_upload_token": true}`.
+
+### `node.json` AP config
+
+Add an `ap` block under `/config/node.json` to override the defaults:
+
+```json
+{
+  "ap": {
+    "auto_trigger_loss_s": 60,
+    "weak_rssi_threshold": -75,
+    "auto_duration_s": 600
+  }
+}
+```
+
+### Current limitation
+
+The phone page can now download, upload, and acknowledge buffered data from the node, but end-to-end relay upload still depends on the external HTTPS relay allowing browser uploads from the local portal origin. If the phone drops access to `192.168.4.1` before the final ack step, reconnect briefly to the node WiFi and reopen the portal to clear the uploaded batch.
+
 ## Current Data Offload Status
 
 Implemented now:
@@ -390,11 +436,15 @@ Implemented now:
 Manual serial export: sdcat <path>
 Offline MQTT buffering: /buf/<seq>.json drains when MQTT reconnects
 Daily CSV logging: /log/YYYY-MM-DD.csv
+Local AP upload portal: 192.168.4.1 with buffer stats/fetch/ack APIs
 ```
 
 Not implemented yet:
 
 ```text
+HTTPS relay service / nginx routing / CORS for phone uploads
+CRM lead capture to upload_leads.csv on the server
+Tap-Map Rails "Sync offline data" button
 Cloud folder upload
 Date-range upload
 Scheduled daily/weekly/monthly/season/year offload

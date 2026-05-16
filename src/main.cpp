@@ -7,6 +7,7 @@
 #include "config.h"
 #include "pins.h"
 #include "net_wifi.h"
+#include "net_ap.h"
 #include "net_mqtt.h"
 #include "net_ota.h"
 #include "time_rtc.h"
@@ -175,7 +176,12 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["ip"]              = wifiUp ? WiFi.localIP().toString() : "";
     doc["wifi_status"]     = wifiUp ? "Connected" : "Disconnected";
     doc["uptime_s"]        = (uint32_t)(millis() / 1000UL);
+    doc["wifi_uptime_s"]   = netWifi_getConnectedUptimeS();
     doc["mqtt_buffer_count"] = storeSd_bufferCount();
+    doc["ap_active"]       = netAp_isActive();
+    doc["ap_ssid"]         = netAp_getSsid();
+    doc["ap_clients"]      = netAp_getClientCount();
+    doc["ap_expires_s"]    = netAp_getExpiresS();
     doc["ts"] = timeRtc_getUnixTime();
 
     doc["flow_rate_1"]  = sensorFlow_getRateLpm(1);
@@ -2037,6 +2043,18 @@ static void handleCmd(const char* payload) {
         storeSd_logEvent("[CMD] restart_wifi received");
         netWifi_reconnect();
     }
+    if (doc["rotate_upload_token"] | false) {
+        if (netAp_rotateUploadToken()) {
+            publishM0Status(false, false);
+        }
+    }
+    if (doc["start_ap"] | false) {
+        uint32_t duration = static_cast<uint32_t>(constrain(doc["duration_s"] | static_cast<int>(AP_DEFAULT_DURATION_S),
+                                                            30, 3600));
+        if (!netAp_start(duration)) {
+            Serial.println("[CMD] start_ap failed");
+        }
+    }
     if (doc["reset_flow_today_1"]  | false) sensorFlow_resetToday(1);
     if (doc["reset_flow_today_2"]  | false) sensorFlow_resetToday(2);
     if (doc["reset_flow_today"]    | false) sensorFlow_resetToday(0);
@@ -2285,6 +2303,7 @@ void setup() {
     actuatorValve_loadConfig();
 
     netWifi_begin();
+    netAp_begin();
     watchdog_begin();
     netMqtt_begin();
     netOta_begin();
@@ -2315,6 +2334,7 @@ void loop() {
     actuatorValve_loop();
 
     netWifi_loop();
+    netAp_loop();
     netMqtt_loop();
     netOta_loop();
 

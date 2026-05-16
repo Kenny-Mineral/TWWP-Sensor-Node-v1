@@ -16,10 +16,34 @@ QoS is 0 for all topics. Retain and direction as noted.
 | `twwp/<id>/lwt` | yes | node → broker | Last-will / availability: `online` when connected, broker publishes `offline` on unexpected disconnect. |
 | `twwp/<id>/session` | no | node → broker | Session-end event. Published when the idle timeout expires. JSON payload with session_id, start_ts, end_ts, duration_s, flow_duration_s, idle_time_s, volume_out_L, volume_in_L, peak_rate_out, peak_rate_in. |
 | `twwp/<id>/sessions_recent` | yes | node → broker | Retained JSON array of the last 10 sessions (newest-first). Each session object includes: id, start_ts, end_ts, dur_s, flow_dur_s, idle_s, vol_out, vol_in, peak_out, peak_in. Republished after each session ends and on MQTT reconnect. |
-| `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4). |
+| `twwp/<id>/cmd` | no | broker → node | Command channel. Parsed in firmware (actuator commands in M3, OTA in M4, upload-portal control in M-Upload). |
 | `twwp/<id>/ota_state` | yes | node → broker | Dedicated OTA state topic for high-frequency OTA progress/status updates. Reserved for OTA telemetry. |
 | `twwp/<id>/wq_config` | yes | node → broker | Retained JSON of all water quality threshold, label, and name config values. Published on MQTT connect and after any cmd change. |
 | `twwp/register` | no | node → broker | First-connect registration payload (M8 — not yet implemented). |
+
+---
+
+## Upload portal command keys
+
+These JSON keys are handled on `twwp/<id>/cmd`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `start_ap` | bool | Starts or extends the local upload AP. Pair with `duration_s`. |
+| `duration_s` | int | AP lifetime in seconds for `start_ap`. Constrained to 30–3600. |
+| `rotate_upload_token` | bool | Rotates the local relay token stored at `/config/upload_token.json`. |
+
+Upload-portal status fields added to `twwp/<id>/status`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ap_active` | bool | `true` while the local upload AP is active. |
+| `ap_ssid` | string | Active upload AP SSID, normally `twwp-<node_id>`. |
+| `ap_clients` | int | Number of phones currently associated to the upload AP. |
+| `ap_expires_s` | int | Seconds remaining before the AP auto-stops. |
+| `wifi_uptime_s` | int | Continuous STA WiFi uptime in seconds. |
+
+The phone-facing upload portal itself is local HTTP on `http://192.168.4.1/`; it does not publish its own MQTT topic.
 
 ---
 

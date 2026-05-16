@@ -155,6 +155,86 @@ static bool findOldestBufferFile(char* pathOut, size_t pathLen, uint32_t& seqOut
     return found;
 }
 
+static bool findNewestBufferFile(char* pathOut, size_t pathLen, uint32_t& seqOut) {
+    FsFile dir;
+    FsFile entry;
+    char name[64];
+    bool found = false;
+    uint32_t bestSeq = 0;
+
+    if (!dir.open(SD_BUF_DIR)) {
+        return false;
+    }
+
+    dir.rewind();
+    while (entry.openNext(&dir, O_RDONLY)) {
+        if (!entry.isDir()) {
+            if (entry.getName(name, sizeof(name)) > 0) {
+                uint32_t seq = 0;
+                if (parseSeqFromName(name, seq)) {
+                    if (!found || seq > bestSeq) {
+                        bestSeq = seq;
+                        if (snprintf(pathOut, pathLen, "%s/%s", SD_BUF_DIR, name) < 0) {
+                            entry.close();
+                            dir.close();
+                            return false;
+                        }
+                        found = true;
+                    }
+                }
+            }
+        }
+        entry.close();
+    }
+
+    dir.close();
+
+    if (found) {
+        seqOut = bestSeq;
+    }
+    return found;
+}
+
+static bool findNextBufferFileAfterSeq(uint32_t afterSeq, char* pathOut, size_t pathLen, uint32_t& seqOut) {
+    FsFile dir;
+    FsFile entry;
+    char name[64];
+    bool found = false;
+    uint32_t bestSeq = 0;
+
+    if (!dir.open(SD_BUF_DIR)) {
+        return false;
+    }
+
+    dir.rewind();
+    while (entry.openNext(&dir, O_RDONLY)) {
+        if (!entry.isDir()) {
+            if (entry.getName(name, sizeof(name)) > 0) {
+                uint32_t seq = 0;
+                if (parseSeqFromName(name, seq) && seq > afterSeq) {
+                    if (!found || seq < bestSeq) {
+                        bestSeq = seq;
+                        if (snprintf(pathOut, pathLen, "%s/%s", SD_BUF_DIR, name) < 0) {
+                            entry.close();
+                            dir.close();
+                            return false;
+                        }
+                        found = true;
+                    }
+                }
+            }
+        }
+        entry.close();
+    }
+
+    dir.close();
+
+    if (found) {
+        seqOut = bestSeq;
+    }
+    return found;
+}
+
 static uint32_t countBufferFilesAndMaxSeq(void) {
     FsFile dir;
     FsFile entry;
@@ -292,6 +372,7 @@ bool storeSd_bufferMessage(const char* topic, const char* payload) {
     JsonDocument doc;
     doc["t"] = topic;
     doc["p"] = payload;
+    doc["ts"] = timeRtc_getUnixTime();
 
     FsFile file;
     if (!file.open(path, FILE_WRITE)) {
@@ -574,6 +655,127 @@ uint32_t storeSd_bufferCount() {
     return countBufferFilesAndMaxSeq();
 }
 
+bool storeSd_getBufferStats(StoreSdBufferStats& stats) {
+    stats = StoreSdBufferStats();
+    if (!sdReady) {
+        return false;
+    }
+
+    FsFile dir;
+    FsFile entry;
+    char name[64];
+
+    if (!dir.open(SD_BUF_DIR)) {
+        return false;
+    }
+
+    dir.rewind();
+    while (entry.openNext(&dir, O_RDONLY)) {
+        if (!entry.isDir() && entry.getName(name, sizeof(name)) > 0) {
+            uint32_t seq = 0;
+            if (!parseSeqFromName(name, seq)) {
+                entry.close();
+                continue;
+            }
+
+            ++stats.count;
+            stats.estBytes += static_cast<uint32_t>(entry.fileSize());
+
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, entry);
+            if (!err) {
+                uint32_t ts = doc["ts"] | 0U;
+                if (ts != 0) {
+                    if (stats.oldestTs == 0 || ts < stats.oldestTs) {
+                        stats.oldestTs = ts;
+                    }
+                    if (stats.newestTs == 0 || ts > stats.newestTs) {
+                        stats.newestTs = ts;
+                    }
+                }
+            }
+        }
+        entry.close();
+        delay(0);
+    }
+
+    dir.close();
+    return true;
+}
+
+bool storeSd_fetchOldestBufferJson(uint16_t maxMessages, String& outJson) {
+    outJson = "[]";
+    if (!sdReady) {
+        return false;
+    }
+
+    if (maxMessages == 0) {
+        return true;
+    }
+
+    outJson = "[";
+    uint16_t fetched = 0;
+    bool havePrevSeq = false;
+    uint32_t prevSeq = 0;
+    while (fetched < maxMessages) {
+        char path[96];
+        uint32_t seq = 0;
+        bool found = havePrevSeq
+            ? findNextBufferFileAfterSeq(prevSeq, path, sizeof(path), seq)
+            : findOldestBufferFile(path, sizeof(path), seq);
+        if (!found) {
+            break;
+        }
+
+        FsFile file;
+        if (!file.open(path, O_RDONLY)) {
+            return false;
+        }
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, file);
+        file.close();
+        if (err) {
+            if (!sd.remove(path)) {
+                return false;
+            }
+            continue;
+        }
+
+        String item;
+        serializeJson(doc, item);
+        if (fetched > 0) {
+            outJson += ",";
+        }
+        outJson += item;
+        prevSeq = seq;
+        havePrevSeq = true;
+        ++fetched;
+    }
+    outJson += "]";
+    return true;
+}
+
+uint16_t storeSd_ackOldestBuffer(uint16_t count) {
+    if (!sdReady || count == 0) {
+        return 0;
+    }
+
+    uint16_t removed = 0;
+    while (removed < count) {
+        char path[96];
+        uint32_t seq = 0;
+        if (!findOldestBufferFile(path, sizeof(path), seq)) {
+            break;
+        }
+        if (!sd.remove(path)) {
+            break;
+        }
+        ++removed;
+    }
+    return removed;
+}
+
 bool storeSd_logDataRow(const char* row, const char* header) {
     if (!sdReady) {
         return false;
@@ -636,4 +838,41 @@ bool storeSd_writeJsonFile(const char* path, JsonDocument& doc) {
     bool ok = serializeJson(doc, file) > 0;
     file.close();
     return ok;
+}
+
+bool storeSd_readTextFile(const char* path, String& outText) {
+    outText = "";
+    if (!sdReady) {
+        return false;
+    }
+
+    FsFile file;
+    if (!file.open(path, O_RDONLY) || file.isDir()) {
+        return false;
+    }
+
+    char buf[129];
+    int bytesRead = 0;
+    while ((bytesRead = file.read(buf, sizeof(buf) - 1)) > 0) {
+        buf[bytesRead] = '\0';
+        outText.concat(buf);
+    }
+    file.close();
+    return bytesRead >= 0;
+}
+
+bool storeSd_writeTextFile(const char* path, const char* text) {
+    if (!sdReady) {
+        return false;
+    }
+
+    FsFile file;
+    if (!file.open(path, O_WRONLY | O_CREAT | O_TRUNC)) {
+        return false;
+    }
+
+    size_t len = strlen(text);
+    size_t written = file.write(reinterpret_cast<const uint8_t*>(text), len);
+    file.close();
+    return written == len;
 }

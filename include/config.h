@@ -15,6 +15,17 @@
 #define RESET_CREDS_HOLD_MS        5000UL
 #define WATCHDOG_TIMEOUT_S           30
 
+// Upload AP / local portal
+#define AP_DEFAULT_DURATION_S      300UL
+#define AP_AUTO_DURATION_S         600UL
+#define AP_AUTO_TRIGGER_LOSS_MS  60000UL
+#define AP_AUTO_TRIGGER_RSSI_THRESHOLD -75
+#define AP_PORT                       80
+#define AP_GATEWAY_IP_STR     "192.168.4.1"
+#define SD_UPLOAD_HTML_PATH   "/config/upload.html"
+#define SD_UPLOAD_TOKEN_PATH  "/config/upload_token.json"
+#define UPLOAD_RELAY_URL      "https://twwp-iot.duckdns.org/api/v1/node-upload"
+
 // SD
 #define SD_MAX_BUFFER_LINES         500
 #define SD_LOG_DIR                  "/log"
