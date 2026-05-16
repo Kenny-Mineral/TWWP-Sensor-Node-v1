@@ -436,38 +436,79 @@ Add an `ap` block under `/config/node.json` to override the defaults:
 }
 ```
 
-### Current limitation
+### Relay server (HTTPS upload endpoint)
 
-The phone page can now download, upload, and acknowledge buffered data from the node, but end-to-end relay upload still depends on the external HTTPS relay allowing browser uploads from the local portal origin. If the phone drops access to `192.168.4.1` before the final ack step, reconnect briefly to the node WiFi and reopen the portal to clear the uploaded batch.
+The relay service is live on the Hetzner VPS.
+
+- **Public endpoint:** `https://twwp-iot.duckdns.org/api/v1/node-upload`
+- **Health check:** `https://twwp-iot.duckdns.org/api/v1/health`
+- **Service:** `twwp-upload-relay` Docker container (FastAPI on port 8000, proxied by nginx)
+- **Compose file:** `/home/kenny/projects/twwp-monitoring/docker-compose.yml` on the VPS
+
+**To restart the relay:**
+```bash
+ssh -i ~/.ssh/hetzner_ed25519 kenny@91.98.133.15
+cd /home/kenny/projects/twwp-monitoring
+docker compose restart relay-service
+docker logs twwp-upload-relay --tail 20
+```
+
+**Token file:** `/home/kenny/projects/twwp-monitoring/upload-relay/data/upload_tokens.json`
+Contains one entry per node: `{"wh_001": "<token>"}`. The same token must be present in `/config/upload_token.json` on the node's SD card.
+
+**wh_001 SD card setup — write to `/config/upload_token.json`:**
+```json
+{"token": "054634ef20ff45bad13b331904114cffb660e8d5a7525c692dc811261760d455"}
+```
+
+**To add a new node token:**
+1. Generate: `openssl rand -hex 32`
+2. Add to `/home/kenny/projects/twwp-monitoring/upload-relay/data/upload_tokens.json` on VPS: `{"wh_001": "...", "wh_002": "<new_token>"}`
+3. Write the same token to `/config/upload_token.json` on the new node's SD card.
+4. No relay restart needed — token file is read per-request.
+
+**To rotate wh_001 token:**
+Publish MQTT command: `{"rotate_upload_token": true}` to `twwp/wh_001/cmd`.
+The node generates a new token, saves it to `/config/upload_token.json`, and publishes it in the next heartbeat. Then update `/home/kenny/projects/twwp-monitoring/upload-relay/data/upload_tokens.json` on the VPS with the new value.
+
+**CRM lead log:** `/home/kenny/projects/twwp-monitoring/upload-relay/data/upload_leads.csv` on VPS.
+Each upload appends a row: `timestamp, node_id, messages_count, uploader_email`.
+
+**Test the relay from command line:**
+```bash
+curl -s https://twwp-iot.duckdns.org/api/v1/health --cacert ~/.twwp/ca.crt
+
+curl -X POST https://twwp-iot.duckdns.org/api/v1/node-upload \
+  --cacert ~/.twwp/ca.crt \
+  -H "Content-Type: application/json" \
+  -d '{"node_id":"wh_001","token":"054634ef20ff45bad13b331904114cffb660e8d5a7525c692dc811261760d455","messages":[{"t":"twwp/wh_001/status","p":"{\"test\":true}"}]}'
+```
+
+Expected response: `{"published": 1, "failed": 0}`
 
 ## Current Data Offload Status
 
-Implemented now:
+Implemented and live:
 
 ```text
 Manual serial export: sdcat <path>
 Offline MQTT buffering: /buf/<seq>.json drains when MQTT reconnects
 Daily CSV logging: /log/YYYY-MM-DD.csv
 Local AP upload portal: 192.168.4.1 with buffer stats/fetch/ack APIs
+HTTPS relay service: https://twwp-iot.duckdns.org/api/v1/node-upload (live)
+CRM lead capture: upload_leads.csv on VPS
 ```
 
 Not implemented yet:
 
 ```text
-HTTPS relay service / nginx routing / CORS for phone uploads
-CRM lead capture to upload_leads.csv on the server
-Tap-Map Rails "Sync offline data" button
+Tap-Map App "Sync offline data" button (M-Upload.5 — in progress)
+QR code label for AP WiFi (M-Upload.4)
 Cloud folder upload
 Date-range upload
 Scheduled daily/weekly/monthly/season/year offload
 Delete-after-upload
 Server-side archive folders
-```
-
-Recommended future design:
-
-```text
-Node -> MQTT batch upload -> server archive folder/cloud storage
 ```
 
 The node should stay simple and reliable. Cloud storage credentials, date range queries, folders, and long-term retention are better handled on the server side. OTA remains separate and is only for firmware updates.

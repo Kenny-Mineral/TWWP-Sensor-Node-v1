@@ -372,7 +372,7 @@ Physical QR code and OLED update when AP is active.
 
 ### M-Upload.5 — Tap-Map App Integration (Rails)
 
-**Rails app side only** (`app.thewholeywaterproject.com`). Enables members to trigger the upload flow from the web app without needing to be physically at the tap first.
+**v2 rebuild only** — implement in `/home/kenny/Desktop/Original tap map layout fetch /` (the in-progress v2 workspace). Do NOT touch the live production app at `app.thewholeywaterproject.com`. Enables members to trigger the upload flow from the web app without needing to be physically at the tap first.
 
 - [ ] **"Sync offline data" button** on the waterhouse/tap detail page:
   - Visible when: `mqtt_buffer_count > 0` from the node's most recent heartbeat (surfaced via HA → Rails API, or direct MQTT subscribe in backend).
@@ -391,6 +391,30 @@ Physical QR code and OLED update when AP is active.
 - [ ] **Status badge on tap card / detail page:**
   - "Last synced: X minutes ago" — from the relay server's `upload_leads.csv` (last row for this node_id) or a dedicated MQTT event.
   - "N messages pending sync" when buffer is non-empty.
+
+---
+
+## M-PowerLoss — Power Loss Resilience Audit
+
+Review and harden the firmware against unexpected power cuts. Taps run on 12V battery but may lose power mid-write or mid-session. Goal: no data corruption, clean recovery on next boot.
+
+- [ ] **Audit NVS write safety** — identify every `Preferences.putX()` call. Confirm none can be interrupted mid-write in a way that leaves NVS inconsistent. ESP32 NVS uses wear-levelling + CRC per entry, but back-to-back writes to the same namespace can corrupt if power cuts between the two. Review `sensor_flow.cpp`, `sensor_tds_meter.cpp`, `sensor_voltage.cpp`.
+- [ ] **Audit SD write safety** — identify every `SD.open(WRITE)` path. Check that files are `close()`d before the next loop tick. A power cut with an open file handle on FAT32 can corrupt the FAT entry and make the file unreadable. High-risk paths: buffer message writes (`/buf/`), CSV data log (`/data/`), flow total (`/config/flow_total.json`), session log (`/log/sessions.csv`).
+- [ ] **Brown-out detector** — confirm `esp_brownout_det_enable()` is active (it is by default in ESP-IDF but worth verifying). Consider setting BOD threshold to give ~5ms warning before reset. Use BOD ISR or `esp_register_shutdown_handler()` to flush NVS / close open SD files before power dies.
+- [ ] **Mid-session power loss** — if power cuts during an active flow session, the session record is lost. Evaluate: write a partial session record to SD on each heartbeat tick while flow is active, so recovery can reconstruct it. Alternatively, detect the orphaned session on next boot (flow total increased since last `session_end` event) and emit a synthetic `session_recovered` event.
+- [ ] **OTA partition safety** — confirm rollback partition is armed correctly on each boot (already tracked in M4, but worth including here as a power-loss edge case: power cut mid-OTA write).
+- [ ] **Boot-time recovery check** — on boot, scan `/buf/` for zero-byte or truncated JSON files (incomplete write before power cut). Log count to serial and SD crash log, delete corrupt files so they don't block ack counting.
+- [ ] **Document findings** — add a `docs/POWER_RESILIENCE.md` summary of what was hardened and what was accepted as a known risk.
+
+---
+
+## Server Security Hardening (non-firmware)
+
+Found during M-Upload.2 deployment. Fix before going to production with real users.
+
+- [ ] **UFW inactive on Hetzner** — `ufw enable` + lock down: allow 22 (SSH), 80, 443, 8883 only. Verify 1883 blocked externally (mosquitto currently has `listener_allow_anonymous true` on 1883).
+- [ ] **Mosquitto 1883 listener** — either remove the `listener 1883` block from `/mosquitto/config/mosquitto.conf` entirely (TLS-only policy), or confirm it is only reachable via Docker internal network. Restart mosquitto after change.
+- [ ] **Mosquitto password file permissions** — `docker exec mqtt chmod 0700 /mosquitto/config/passwords` to suppress the world-readable warning.
 
 ---
 

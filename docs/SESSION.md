@@ -3,33 +3,37 @@ _Update before switching tools. Commit immediately after._
 
 ## Last done
 
-### Session 2026-05-16 — Mobile upload portal firmware pass
+### Session 2026-05-16 — Relay deployment + Tap-Map v2 sync button
 
 **Scope:**
-- **Firmware-side M-Upload implementation** — added `src/net_ap.{h,cpp}` for a concurrent STA+AP upload portal with local HTTP endpoints (`/`, `/api/buffer/stats`, `/api/buffer/fetch`, `/api/buffer/ack`), SD-backed upload token, auto-trigger on WiFi loss / weak RSSI, and MQTT commands `{"start_ap": true, "duration_s": ...}` plus `{"rotate_upload_token": true}`.
-- **Status / display integration** — heartbeat now includes `ap_active`, `ap_ssid`, `ap_clients`, `ap_expires_s`, and `wifi_uptime_s`; OLED shows an `UPLOAD MODE` screen while the AP is active.
-- **Buffer metadata support** — buffered MQTT files now persist `ts`, and SD helpers can report stats, fetch oldest buffered records, acknowledge uploaded batches, and serve `/config/upload.html` overrides from SD.
-- **Docs / handoff** — updated `docs/USER_OPERATIONS.md`, `docs/MQTT_TOPIC_MAP.md`, and `docs/TASK_QUEUE.md` to document the local portal and to separate completed firmware work from the still-pending relay / Rails tasks.
-- **Relay scaffold** — added a FastAPI-based `upload-relay` service in `/home/kenny/twwp-monitoring` with token validation, browser CORS for `192.168.4.1`, per-node rate limiting, `upload_leads.csv` capture, docker-compose wiring, and nginx setup notes.
-- **Bench debug hooks** — added serial AP debug commands (`ap_status`, `ap_start [s]`, `ap_stop`, `ap_token`, `ap_fetch [n]`) plus local endpoint `GET /api/debug/state` so bench testing can inspect AP config, token, WiFi state, and buffer counters without guessing.
-- **Verification** — `pio run` passed on 2026-05-16 after the AP/upload changes.
-  - Relay syntax check passed with `python3 -m py_compile /home/kenny/twwp-monitoring/upload-relay/app.py`.
-  - Debug-hook follow-up build passed with `pio run`.
-- **Commits** — firmware/docs committed as `387051f` (`feat(upload): add offline AP sync portal`). Relay scaffold committed in the monitoring repo as `7aacc30` plus cleanup commit `9dacfde` to ignore Python cache artifacts.
+- **M-Upload.2 deployed live** — upload-relay FastAPI service built and running on Hetzner VPS as `twwp-upload-relay` Docker container (on `web` network alongside nginx proxy manager). Fixed MQTT connection bug (proper `on_connect`/`on_disconnect` callbacks, `connect_async`). Fixed hairpin NAT issue via `extra_hosts: twwp-iot.duckdns.org → 172.18.0.5` (mqtt container IP). Added nginx location block for `/api/v1/node-upload` and `/api/v1/health` in `/home/kenny/projects/proxy/data/nginx/custom/http.conf`.
+- **End-to-end verified** — `curl` smoke test returned `{"published":1,"failed":0}`. Health endpoint confirms `mqtt_connected: true`.
+- **Credentials provisioned** — `twwp_relay` MQTT user added to mosquitto password file; `wh_001` upload token written to `/home/kenny/projects/twwp-monitoring/upload-relay/data/upload_tokens.json` on VPS. Token also needs to be written to SD card `/config/upload_token.json` on the physical node.
+- **M-Upload.5 — Tap-Map v2 sync button** — added `SYNC_OFFLINE_DATA` permission to `roles.js` (member+). Added "Offline Data Sync" card to `TapDetailView.jsx` in `twwp-v2-frontend`. Two-state flow: idle (shows buffer count + amber "Sync offline data →" button) → triggered (shows WiFi SSID + "Open upload portal →" deeplink to `192.168.4.1/?member=1`). Verified in browser — both states render correctly.
+- **USER_OPERATIONS.md updated** — relay credentials, how-to, curl test commands, token management, CRM leads log path all documented.
+- **TASK_QUEUE.md updated** — added M-PowerLoss audit task, Server Security Hardening section (UFW inactive, 1883 exposed, password file permissions).
+- **Infrastructure registry updated** — relay endpoint, credentials, tokens, Docker networking note, known security gaps.
 
-**Known gap:** the node-side portal and relay scaffold are built, but the relay is not live-verified from this workspace because `docker` is not installed here. nginx routing and end-to-end browser upload still need deployment/runtime verification, and the Rails-side Tap-Map integration is untouched.
+**Known gaps to fix before production:**
+- UFW is inactive on Hetzner — all ports exposed. Need to enable UFW and block everything except 22, 80, 443, 8883.
+- Mosquitto 1883 listener has `allow_anonymous true` — needs to be removed or confirmed internal-only.
+- wh_001 upload token not yet written to SD card (node was not powered on this session).
+- M-Upload.5 MQTT publish (the backend action that actually triggers the node's AP) is not wired — the UI shows instructions, but no MQTT command is sent from the v2 app yet (needs backend when Rails/API is built).
+- M-Upload.4 QR code label not yet generated.
 
 ---
 
 ## In progress
-Firmware repo has new uncommitted debug-hook changes in `src/main.cpp`, `src/net_ap.*`, `docs/USER_OPERATIONS.md`, and this session file. The monitoring repo still only has the unrelated pre-existing Grafana dashboard edits.
+Nothing. Clean state.
 
 ## Next step
 
-M-Upload.2 deployment pass — bring up `/home/kenny/twwp-monitoring` with Docker on the target host, populate `upload_tokens.json`, wire nginx to `127.0.0.1:8000`, and test phone upload end-to-end before starting M-Upload.5 Rails work.
+1. **Security pass** — enable UFW, block 1883 externally, fix mosquitto password file permissions. See "Server Security Hardening" section in TASK_QUEUE.md.
+2. **SD card provisioning** — power on node, write wh_001 upload token to `/config/upload_token.json` on SD card: `{"token":"054634ef20ff45bad13b331904114cffb660e8d5a7525c692dc811261760d455"}`.
+3. **End-to-end bench test** — trigger AP via MQTT, join phone to node WiFi, run upload through browser, confirm relay receives and publishes.
 
 ## Tool last used
-codex
+claude-code
 
 ## Updated
-2026-05-16 16:09
+2026-05-16
