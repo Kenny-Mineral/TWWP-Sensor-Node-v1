@@ -314,6 +314,34 @@ static void handleBufferAck() {
     s_server.send(200, "application/json", payload);
 }
 
+static void handleDebugState() {
+    StoreSdBufferStats stats;
+    storeSd_getBufferStats(stats);
+
+    JsonDocument doc;
+    doc["node_id"] = NODE_ID;
+    doc["firmware"] = NODE_FIRMWARE_VERSION;
+    doc["ap_active"] = s_apActive;
+    doc["ap_ssid"] = s_apSsid;
+    doc["ap_clients"] = netAp_getClientCount();
+    doc["ap_expires_s"] = netAp_getExpiresS();
+    doc["upload_url"] = UPLOAD_RELAY_URL;
+    doc["upload_token"] = s_uploadToken;
+    doc["auto_trigger_loss_ms"] = s_autoTriggerLossMs;
+    doc["weak_rssi_threshold"] = s_weakRssiThreshold;
+    doc["auto_duration_s"] = s_autoDurationS;
+    doc["wifi_connected"] = netWifi_isConnected();
+    doc["wifi_rssi"] = netWifi_isConnected() ? WiFi.RSSI() : 0;
+    doc["buffer_count"] = stats.count;
+    doc["buffer_est_bytes"] = stats.estBytes;
+    doc["buffer_oldest_ts"] = stats.oldestTs;
+    doc["buffer_newest_ts"] = stats.newestTs;
+
+    String payload;
+    serializeJson(doc, payload);
+    s_server.send(200, "application/json", payload);
+}
+
 static void handleNotFound() {
     s_server.send(404, "application/json", "{\"error\":\"not found\"}");
 }
@@ -324,6 +352,7 @@ static void beginServer() {
         s_server.on("/api/buffer/stats", HTTP_GET, handleBufferStats);
         s_server.on("/api/buffer/fetch", HTTP_GET, handleBufferFetch);
         s_server.on("/api/buffer/ack", HTTP_POST, handleBufferAck);
+        s_server.on("/api/debug/state", HTTP_GET, handleDebugState);
         s_server.onNotFound(handleNotFound);
         s_routesReady = true;
     }
@@ -479,4 +508,58 @@ bool netAp_rotateUploadToken() {
         storeSd_logEvent("[AP] upload token rotated");
     }
     return ok;
+}
+
+const char* netAp_getUploadToken() {
+    return s_uploadToken.c_str();
+}
+
+uint32_t netAp_getAutoTriggerLossMs() {
+    return s_autoTriggerLossMs;
+}
+
+int netAp_getWeakRssiThreshold() {
+    return s_weakRssiThreshold;
+}
+
+uint32_t netAp_getAutoDurationS() {
+    return s_autoDurationS;
+}
+
+void netAp_printDebug(Print& out, bool revealToken) {
+    StoreSdBufferStats stats;
+    storeSd_getBufferStats(stats);
+
+    out.println("[AP] debug");
+    out.print("active: ");
+    out.println(s_apActive ? "yes" : "no");
+    out.print("ssid: ");
+    out.println(s_apSsid);
+    out.print("clients: ");
+    out.println(netAp_getClientCount());
+    out.print("expires_s: ");
+    out.println(netAp_getExpiresS());
+    out.print("upload_url: ");
+    out.println(UPLOAD_RELAY_URL);
+    out.print("upload_token: ");
+    if (revealToken) out.println(s_uploadToken);
+    else out.println("(hidden; use ap_token to reveal)");
+    out.print("auto_trigger_loss_ms: ");
+    out.println(s_autoTriggerLossMs);
+    out.print("weak_rssi_threshold: ");
+    out.println(s_weakRssiThreshold);
+    out.print("auto_duration_s: ");
+    out.println(s_autoDurationS);
+    out.print("wifi_connected: ");
+    out.println(netWifi_isConnected() ? "yes" : "no");
+    out.print("wifi_rssi: ");
+    out.println(netWifi_isConnected() ? WiFi.RSSI() : 0);
+    out.print("buffer_count: ");
+    out.println(stats.count);
+    out.print("buffer_est_bytes: ");
+    out.println(stats.estBytes);
+    out.print("buffer_oldest_ts: ");
+    out.println(stats.oldestTs);
+    out.print("buffer_newest_ts: ");
+    out.println(stats.newestTs);
 }

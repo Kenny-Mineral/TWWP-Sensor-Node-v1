@@ -156,6 +156,11 @@ sdls /log
 sdcat /log/2026-04-26.csv
 sdrm /log/2000-00-00.csv
 sdprune
+ap_status
+ap_start 300
+ap_token
+ap_fetch 5
+ap_stop
 ```
 
 Command behavior:
@@ -169,6 +174,11 @@ Command behavior:
 | `sdcat <path>` | Prints a file over USB serial. |
 | `sdrm <path>` | Removes a file or empty directory. Refuses protected paths. |
 | `sdprune` | Deletes dated `/log/YYYY-MM-DD.csv` files older than configured retention. |
+| `ap_status` | Prints upload-portal debug state: AP active flag, SSID, clients, timer, WiFi RSSI, and buffer stats. |
+| `ap_start [seconds]` | Starts the upload AP from serial for bench testing. Default 300s, range 30–3600. |
+| `ap_stop` | Stops the upload AP immediately. |
+| `ap_token` | Prints the relay upload token stored in `/config/upload_token.json`. Use carefully. |
+| `ap_fetch [n]` | Prints the oldest buffered messages as JSON without deleting them. Default 5, max 20. |
 
 ## OTA Firmware Update
 
@@ -389,6 +399,7 @@ The node now supports a local AP + upload portal for relaying buffered MQTT mess
 ### How to trigger it
 
 - MQTT command: publish `{"start_ap": true, "duration_s": 300}` to `twwp/<node_id>/cmd`.
+- Serial bench command: `ap_start 300`
 - Automatic trigger: if STA WiFi stays disconnected for more than `ap.auto_trigger_loss_s` seconds, or stays weaker than `ap.weak_rssi_threshold` dBm for that same window, the node auto-starts the AP for the configured duration.
 
 ### What the node does
@@ -401,6 +412,7 @@ The node now supports a local AP + upload portal for relaying buffered MQTT mess
   - `GET /api/buffer/stats`
   - `GET /api/buffer/fetch?count=N`
   - `POST /api/buffer/ack`
+  - `GET /api/debug/state` for bench/debug inspection of AP config, token, WiFi state, and buffer counters
 
 ### Operator files on SD
 

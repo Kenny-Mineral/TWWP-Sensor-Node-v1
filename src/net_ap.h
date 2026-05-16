@@ -11,3 +11,8 @@ const char* netAp_getSsid();
 uint8_t netAp_getClientCount();
 uint32_t netAp_getExpiresS();
 bool netAp_rotateUploadToken();
+const char* netAp_getUploadToken();
+uint32_t netAp_getAutoTriggerLossMs();
+int netAp_getWeakRssiThreshold();
+uint32_t netAp_getAutoDurationS();
+void netAp_printDebug(Print& out, bool revealToken = false);

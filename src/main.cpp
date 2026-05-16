@@ -304,7 +304,7 @@ static void serviceSerialConsole() {
         Serial.println("[SERIAL] console connected");
         Serial.print("[SERIAL] leak state: ");
         Serial.println(leakStateText());
-        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune, ota <url> [md5], ota_state, wq_status, wq_poll, reset_flow_today[_1/_2], reset_flow_totals[_1/_2]");
+        Serial.println("[SERIAL] commands: sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune, ota <url> [md5], ota_state, ap_status, ap_start [s], ap_stop, ap_token, ap_fetch [n], wq_status, wq_poll, reset_flow_today[_1/_2], reset_flow_totals[_1/_2]");
     }
 
     wasConnected = connected;
@@ -374,6 +374,34 @@ static void serviceSerialConsole() {
                                   (unsigned)netOta_getProgressPct(),
                                   netOta_getError() ? netOta_getError() : "none",
                                   netOta_getUrl() ? netOta_getUrl() : "none");
+                } else if (strcmp(cmd, "ap_status") == 0) {
+                    netAp_printDebug(Serial, false);
+                } else if (strcmp(cmd, "ap_token") == 0) {
+                    netAp_printDebug(Serial, true);
+                } else if (strcmp(cmd, "ap_stop") == 0) {
+                    netAp_stop();
+                    Serial.println("[AP] stop requested");
+                } else if (strcmp(cmd, "ap_start") == 0 || strncmp(cmd, "ap_start ", 9) == 0) {
+                    uint32_t duration = AP_DEFAULT_DURATION_S;
+                    if (strncmp(cmd, "ap_start ", 9) == 0) {
+                        duration = static_cast<uint32_t>(constrain(atoi(cmd + 9), 30, 3600));
+                    }
+                    if (netAp_start(duration)) {
+                        Serial.printf("[AP] start requested for %lus\n", static_cast<unsigned long>(duration));
+                    } else {
+                        Serial.println("[AP] failed to start");
+                    }
+                } else if (strcmp(cmd, "ap_fetch") == 0 || strncmp(cmd, "ap_fetch ", 9) == 0) {
+                    uint16_t count = 5;
+                    if (strncmp(cmd, "ap_fetch ", 9) == 0) {
+                        count = static_cast<uint16_t>(constrain(atoi(cmd + 9), 1, 20));
+                    }
+                    String payload;
+                    if (storeSd_fetchOldestBufferJson(count, payload)) {
+                        Serial.println(payload);
+                    } else {
+                        Serial.println("[AP] buffer fetch failed");
+                    }
                 } else if (strcmp(cmd, "wq_status") == 0) {
                     sensorYieryi_printStatus(Serial);
                 } else if (strcmp(cmd, "wq_poll") == 0) {
@@ -382,6 +410,7 @@ static void serviceSerialConsole() {
                 } else if (strcmp(cmd, "help") == 0) {
                     Serial.println("[SERIAL] SD:      sdls [path], sdcat <path>, sdrm <path>, sdinfo, sdprune");
                     Serial.println("[SERIAL] OTA:     ota <url> [md5], ota_state");
+                    Serial.println("[SERIAL] AP:      ap_status, ap_start [s], ap_stop, ap_token, ap_fetch [n]");
                     Serial.println("[SERIAL] WQ:      wq_status, wq_poll");
                     Serial.println("[SERIAL] today:   reset_flow_today[_1/_2]");
                     Serial.println("[SERIAL] week:    reset_flow_week[_1/_2]");
