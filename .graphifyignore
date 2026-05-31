@@ -1,0 +1,10 @@
+.pio/
+.git/
+lib/README
+test/README
+include/README
+*.bin
+*.hex
+*.o
+*.a
+graphify-out/
