@@ -14,8 +14,11 @@
 #define PIN_FLOW_1       4   // USN-HS06PE — purified output, INPUT_PULLUP, interrupt FALLING
 #define PIN_FLOW_2       5   // USN-HS06PS — raw input,      INPUT_PULLUP, interrupt FALLING
 
-// M2 — Pressure (stub)
-#define PIN_PRESSURE     7   // Analog ADC, 0–5V via 2:1 divider → 0–2.5V
+// M1 — Flow sensor ch3 (DWS-MH-02 — RO-to-tank fill line)
+#define PIN_FLOW_3       7   // DWS-MH-02, INPUT_PULLUP, interrupt FALLING
+
+// M2 — Pressure (stub, TBD pin — GPIO7 repurposed for flow ch3)
+// #define PIN_PRESSURE  TBD  // Analog ADC, 0–5V via 2:1 divider → 0–2.5V (needs free header pin)
 
 // Display — SSD1306 OLED on main Wire bus (shared with DS3231, no address conflict)
 #define PIN_OLED_SDA     PIN_I2C_SDA   // GPIO9

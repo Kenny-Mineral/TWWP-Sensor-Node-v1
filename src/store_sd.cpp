@@ -876,3 +876,19 @@ bool storeSd_writeTextFile(const char* path, const char* text) {
     file.close();
     return written == len;
 }
+
+bool storeSd_deleteFile(const char* path) {
+    if (!sdReady || !path || path[0] == '\0') {
+        return false;
+    }
+    FsFile file;
+    if (!file.open(path, O_RDONLY)) {
+        return false;
+    }
+    bool isDir = file.isDir();
+    file.close();
+    if (isDir) {
+        return false;
+    }
+    return sd.remove(path);
+}

@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-30
 **Source:** Research in `/home/kenny/Documents/Waveshare build TWWP/reference/miscellaneous/`
-**References:** `flow_pulse_firmware_improvements.md`, `flow_sensor_calibration_v105.xlsx`
+**References:** `flow_pulse_firmware_improvements.md`, `flow_sensor_calibration_v106.xlsx`
 
 ---
 
@@ -16,7 +16,7 @@ What is missing are the improvements identified during calibration testing that 
 
 ---
 
-## Calibration Data (from flow_sensor_calibration_v105.xlsx)
+## Calibration Data (from flow_sensor_calibration_v106.xlsx)
 
 | Sensor | Channel | Nominal K | K at Low Flow | K at Med Flow | K at High Flow | Variation |
 |--------|---------|-----------|---------------|---------------|----------------|-----------|

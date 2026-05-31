@@ -1,6 +1,6 @@
 # Pin Allocation — Waveshare ESP32-S3-RS485-CAN
 
-**Last updated:** 2026-05-15
+**Last updated:** 2026-05-26
 **Version:** v4 — OLED moved to main Wire bus (GPIO9/GPIO3); GPIO1/GPIO2 SH1.0 free.
 **Source of truth in code:** `include/pins.h`. Update both together — never one alone.
 
@@ -67,10 +67,10 @@
 
 | Function | GPIO | Dir | Pull | ADC? | VCC | Notes |
 |---|---|---|---|---|---|---|
-| **Flow #1 pulse** | 4 | INPUT | PULLUP | — | 5V | USN-HS06PE/PS, attachInterrupt FALLING — confirmed M1 |
-| **Flow #2 pulse** | 5 | INPUT | PULLUP | — | 5V | USN-HS06PE/PS, attachInterrupt FALLING — confirmed M1 |
+| **Flow #1 pulse (Tap Output)** | 4 | INPUT | PULLUP | — | 5V | DWS-MH-02, Ch1 — user tap consumption. attachInterrupt FALLING |
+| **Flow #2 pulse (RO Output)** | 5 | INPUT | PULLUP | — | 5V | USN-HS06PE, Ch2 — RO output into tank/system. attachInterrupt FALLING |
 | **Leak DO** | 6 | INPUT | PULLUP | — | 3V3 | MH-RD comparator out, LOW = wet |
-| **Pressure ADC** | 7 | INPUT | — | ADC1_CH6 | 5V | 0–5V → 2:1 divider → 0–2.5V |
+| **Flow #3 pulse (RO Input)** | 7 | INPUT | PULLUP | — | 5V | USN-HS06PS, Ch3 — raw RO input / grey-water reference. attachInterrupt FALLING |
 | **Valve relay output** | 8 | OUTPUT | — | — | 5V (relay VCC) | Active-low relay module IN1. LOW=open. Current load: 12V LED; future: ball valve. |
 | **I²C SDA (DS3231 + OLED)** | 9 | open-drain | 4.7kΩ on module | — | 3V3 | DS3231 @ 0x68, EEPROM @ 0x57, SSD1306 OLED @ 0x3C — shared Wire bus, no address conflict |
 | **OLED button** | 10 | INPUT | PULLUP | — | 3V3 | Tactile button, LOW=pressed — cycles display frame |
@@ -96,7 +96,7 @@ Off-header for future: GPIO1, GPIO2 (SH1.0), GPIO33–37, GPIO40–42. (GPIO47 r
 - [x] D1: GPIO access — full 2×12 header accessible (enclosure open). IO1/IO2 on SH1.0 always accessible.
 - [x] D2: GPIO8 device — relay module (active-low, 5V coil). Currently driving 12V LED; future ball valve.
 - [x] D3: Valve driver — relay module with optoisolator. GPIO8 → IN1. Jumper JD-VCC+VCC bridged (shared 5V).
-- [ ] D4: Pressure sensor — confirm 0–5V output and PSI range.
+- [x] D4: GPIO7 = flow ch3 (USN-HS06PS, raw RO input / grey-water reference). Ch1 (GPIO4) = DWS-MH-02 (user tap output). Ch2 (GPIO5) = USN-HS06PE (RO output to tank). Pressure sensor deferred to TBD free pin.
 - [ ] D5: Leak detector — DO only (GPIO6) or DO + AO (GPIO6 + GPIO2)?
 - [ ] D6: Power topology — 12V into board VCC terminal → tap 3V3/5V from header?
 - [ ] D7: GPIO3 as I²C SCL — if uncomfortable, swap SCL→GPIO14 and SD CS→GPIO2.

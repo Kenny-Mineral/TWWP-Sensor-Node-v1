@@ -67,7 +67,7 @@ bool netMqtt_begin() {
     mqttClient.setCallback(mqttCallback);
     mqttClient.setKeepAlive(15);
     mqttClient.setSocketTimeout(3);
-    mqttClient.setBufferSize(4096);
+    mqttClient.setBufferSize(8192);  // increased for 3-channel heartbeat
 
     mqtt_lastAttempt = 0;
     mqtt_backoffMs = 1000;

@@ -58,6 +58,7 @@ K value = pulses per litre. The active K value for each channel is loaded from `
 |---|---|---|---|---|---|
 | **USN-HS06PE** | 0.3–6.0 LPM | 5,500 | 1/4" PE pipe | RO output — general purpose, wider range | https://www.aliexpress.com/item/1005006630839984.html |
 | **USN-HS06PS** | 0.1–1.0 LPM | 20,700 | 1/4" PE or PVC | RO input — low-flow, 0.8 mm inner bore, high pressure drop | https://www.aliexpress.com/item/1005006630839984.html |
+| **DWS-MH-02** | 0.2–3.0 LPM | 874–939 (field) | G1/2 BSP | User tap output (Ch1, GPIO4). Non-linear: F(Hz)=15Q−2. Field K is 12–22% higher than formula. Use field-measured K-table, not formula values. | TBD |
 
 > Add a row whenever a new sensor model is tested. The K value on the housing is a starting point — calibrate against a measured volume for best accuracy.
 
@@ -86,34 +87,47 @@ Multi-point calibration example:
 ```json
 {
   "flow": {
-    "k_factor_1": 5500,
-    "k_factor_2": 20700,
+    "k_factor_1": 916,
+    "k_factor_2": 5500,
+    "k_factor_3": 20700,
     "k_table_1": [
+      {"flow_lpm": 0.91, "k": 874},
+      {"flow_lpm": 1.23, "k": 916},
+      {"flow_lpm": 1.46, "k": 939}
+    ],
+    "k_table_2": [
       {"flow_lpm": 0.42, "k": 4972},
       {"flow_lpm": 0.99, "k": 5468},
       {"flow_lpm": 1.42, "k": 5476}
     ],
-    "k_table_2": [
+    "k_table_3": [
       {"flow_lpm": 0.42, "k": 21120},
       {"flow_lpm": 0.99, "k": 20818},
       {"flow_lpm": 1.38, "k": 21104}
     ],
     "debounce_us_1": 1000,
-    "debounce_us_2": 500,
-    "flow_avg_window": 5
+    "debounce_us_2": 1000,
+    "debounce_us_3": 500,
+    "flow_avg_window": 5,
+    "sensor_model_1": "DWS-MH-02",
+    "sensor_model_2": "USN-HS06PE",
+    "sensor_model_3": "USN-HS06PS"
   }
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `flow.k_factor_1` | 5500 | Nominal K for flow sensor 1 (RO Output, USN-HS06PE on GPIO4). Fallback if no K-table is configured. |
-| `flow.k_factor_2` | 20700 | Nominal K for flow sensor 2 (RO Input, USN-HS06PS on GPIO5). Fallback if no K-table is configured. |
+| `flow.k_factor_1` | 916 | Nominal K for Ch1 (Tap Output, DWS-MH-02, GPIO4). Fallback if no K-table is configured. |
+| `flow.k_factor_2` | 5500 | Nominal K for Ch2 (RO Output, USN-HS06PE, GPIO5). Fallback if no K-table is configured. |
+| `flow.k_factor_3` | 20700 | Nominal K for Ch3 (RO Input, USN-HS06PS, GPIO7). Fallback if no K-table is configured. |
 | `flow.k_table_1` | — | Optional ordered array of calibration points for channel 1 (lowest flow first). Overrides single K. |
 | `flow.k_table_2` | — | Optional ordered array of calibration points for channel 2 (lowest flow first). Overrides single K. |
-| `flow.debounce_us_1` | 1000 | ISR debounce for channel 1 (µs). Range 100–10000. Default 1000 is safe to ~10.9 L/min. |
-| `flow.debounce_us_2` | 500 | ISR debounce for channel 2 (µs). Range 100–10000. Default 500 is safe to ~5.8 L/min. |
-| `flow.flow_avg_window` | 5 | Moving-average window size (samples, 1–20). Shared across both channels. |
+| `flow.k_table_3` | — | Optional ordered array of calibration points for channel 3 (lowest flow first). Overrides single K. |
+| `flow.debounce_us_1` | 1000 | ISR debounce for channel 1 (µs). Range 100–10000. |
+| `flow.debounce_us_2` | 1000 | ISR debounce for channel 2 (µs). Range 100–10000. |
+| `flow.debounce_us_3` | 500 | ISR debounce for channel 3 (µs). Range 100–10000. Default 500 is safe to ~5.8 L/min for USN-HS06PS. |
+| `flow.flow_avg_window` | 5 | Moving-average window size (samples, 1–20). Shared across all channels. |
 
 > If a K-table is absent, the firmware uses the matching single `k_factor_*` as a 1-point table. Backward compatible with older `node.json` files that only have `k_factor_1` / `k_factor_2`.
 
@@ -121,28 +135,31 @@ Multi-point calibration example:
 
 3-wire: VCC (5 V), GND, Signal (open-collector, pulled up internally via `INPUT_PULLUP`).
 
-| Signal | GPIO |
-|---|---|
-| Flow #1 signal | GPIO4 |
-| Flow #2 signal | GPIO5 |
-| VCC | 5 V header |
-| GND | GND header |
+| Signal | GPIO | Sensor | Role |
+|---|---|---|---|
+| Flow #1 signal | GPIO4 | DWS-MH-02 | Tap Output (user consumption) |
+| Flow #2 signal | GPIO5 | USN-HS06PE | RO Output (into tank/system) |
+| Flow #3 signal | GPIO7 | USN-HS06PS | RO Input (grey-water reference) |
+| VCC | 5 V header | all | |
+| GND | GND header | all | |
 
 ---
 
 ### Calibration Data
 
-Calibration testing (from `flow_sensor_calibration_v105.xlsx`) revealed significant K-factor variation in the PE (output) sensor and good linearity in the PS (input) sensor:
+Calibration testing (from `flow_sensor_calibration_v106.xlsx`) revealed significant K-factor variation in the PE (output) sensor and good linearity in the PS (input) sensor:
 
 | Sensor | Channel | Nominal K | K at Low Flow | K at Med Flow | K at High Flow | Variation |
 |---|---|---|---|---|---|---|
-| USN-HS06PE (Output) | 1 (GPIO4) | ~5,500 | ~4,972 | ~5,468 | ~5,476 | **~10%** |
-| USN-HS06PS (Input) | 2 (GPIO5) | ~20,700 | ~21,120 | ~20,818 | ~21,105 | ~2% |
+| DWS-MH-02 (Tap Output) | 1 (GPIO4) | ~916 | ~874 (0.91 LPM) | ~916 (1.23 LPM) | ~939 (1.46 LPM) | **~7%** |
+| USN-HS06PE (RO Output) | 2 (GPIO5) | ~5,500 | ~4,972 | ~5,468 | ~5,476 | **~10%** |
+| USN-HS06PS (RO Input) | 3 (GPIO7) | ~20,700 | ~21,120 | ~20,818 | ~21,105 | ~2% |
 
 **Key findings:**
-- The PE sensor shows ~10% K variation across its flow range — a single fixed K causes systematic error, hence the multi-point K-table with linear interpolation.
-- The PS sensor is relatively linear (~2% variation) — a single K works well but a K-table provides additional precision.
-- The firmware defaults (`k_factor_1` = 5,500, `k_factor_2` = 20,700) are now calibrated values, not the old placeholder values (38 / 38).
+- DWS-MH-02 (Ch1): field K is 12–22% higher than the formula (F=15Q−2) predicts. Always use field-measured K-table values, not formula estimates.
+- USN-HS06PE (Ch2): ~10% K variation across its flow range — multi-point K-table required for accurate measurement.
+- USN-HS06PS (Ch3): relatively linear (~2% variation) — single K works but K-table adds precision.
+- The firmware defaults (`k_factor_1` = 916, `k_factor_2` = 5,500, `k_factor_3` = 20,700) are calibrated field values.
 
 **Firmware compensation strategy:**
 1. Raw pulses are accumulated each 1-second interval.
@@ -161,9 +178,9 @@ Calibration testing (from `flow_sensor_calibration_v105.xlsx`) revealed signific
 | **Part** | TBD |
 | **Output** | 0–5 V analog (assumed) |
 | **Range** | TBD — confirm PSI/bar range before ordering |
-| **Wiring** | 0–5 V → 2:1 resistor divider → 0–2.5 V → GPIO7 (ADC1_CH6) |
+| **Wiring** | 0–5 V → 2:1 resistor divider → 0–2.5 V → TBD GPIO (ADC1 channel) |
 | **VCC** | 5 V |
-| **GPIO** | GPIO7 |
+| **GPIO** | TBD — GPIO7 is now used by flow ch3 (USN-HS06PS). New free pin needed (GPIO1 or GPIO2 on SH1.0 sockets). |
 | **URL** | TBD |
 
 ---

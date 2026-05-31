@@ -93,17 +93,21 @@ No Modbus library is needed for the physical layer. For Modbus RTU protocol (YiE
 | `net_wifi.{h,cpp}` | WiFiManager + reconnect + credential reset |
 | `net_mqtt.{h,cpp}` | MQTT/TLS client + HA discovery + SD offline buffer |
 | `net_ota.{h,cpp}` | OTA update driver — MQTT-triggered HTTPS update with MD5 verification, rollback window, and ArduinoOTA servicing during idle state |
+| `net_ap.{h,cpp}` | Concurrent STA+AP upload portal — WiFi AP broadcast, HTTP server (port 80), auto-trigger on WiFi loss/weak RSSI, MQTT `start_ap` command, SD token auth, OLED UPLOAD MODE screen, serial debug commands |
 | `time_rtc.{h,cpp}` | DS3231 + NTP sync + drift correction |
-| `store_sd.{h,cpp}` | SD event log + time-series data log + FIFO ring-buffer queue + JSON file helpers |
+| `store_sd.{h,cpp}` | SD event log + time-series data log + FIFO ring-buffer queue + JSON file helpers + buffer stats/fetch/ack for upload portal |
 | `watchdog.{h,cpp}` | Hardware WDT + crash log |
 | `status_led.{h,cpp}` | WS2812 RGB via FastLED |
+| `display_oled.{h,cpp}` | SSD1306 128×64 I²C OLED — 6-frame sliding carousel (WQ summary, remin detail, flow/waste, tank level, sys health, branding), sticky header, UPLOAD MODE screen when AP active |
+| `rs485_mux.{h,cpp}` | RS485 byte classifier — routes `$WM` ASCII frames (TDS meter) and Modbus RTU frames (YiErYi) on the shared UART1 bus; 64-byte Modbus FIFO, ASCII accumulator, 200 ms timeout guard |
 | `sensor_leak.{h,cpp}` | MH-RD digital — LOW = wet, logs event on state change |
-| `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing, uint64_t raw pulse totals, K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel, runtime-configurable debounce/window |
+| `sensor_flow.{h,cpp}` | Hall pulse counter on GPIO4/5 — ISR debounce, low-flow cutoff, multi-point K-table with linear interpolation, moving-average smoothing, uint64_t raw pulse totals, K-factor from `node.json`, NVS+SD persistence, rate/total/today/week/month/year per channel, runtime-configurable debounce/window. Flow calibration wizard per channel (begin/commit/accept/abort). Sensor model registry (USN-HS06PE, USN-HS06PS, DWS-MH-02). |
 | `session_flow.{h,cpp}` | Tap session lifecycle — IDLE/ACTIVE/ENDING state machine, configurable idle timeout (NVS, 5–100 s) and flow threshold (NVS, 0.01–0.5 L/min), 10-session ring buffer with SD persistence, retained `sessions_recent` MQTT publish, leak-suspect detection |
 | `sensor_voltage.{h,cpp}` | ADS1115 I²C ADC (0x48) + 100kΩ/33kΩ divider — 12V battery voltage, %, charge state, NVS-persisted v_min/v_max/cal (M2.5) |
 | `sensor_pressure.{h,cpp}` | Stub — analog ADC + voltage divider (M2, sensor not yet purchased) |
 | `sensor_temp.{h,cpp}` | Stub — no DS18B20; temperature will come from YiErYi 3788 RS485 (M5) |
-| `sensor_yieryi.{h,cpp}` | YiErYi 3178/3788 Modbus RTU via RS485 UART1 (M5) — non-blocking state machine, CRC validation, pH/ORP mode command, raw-frame diagnostics |
+| `sensor_yieryi.{h,cpp}` | YiErYi 3178/3788 Modbus RTU via RS485 UART1 (M5) — non-blocking state machine, CRC validation, pH/ORP mode command, raw-frame diagnostics. Calibration date per zone stored in `node.json`, settable via MQTT. |
+| `sensor_tds_meter.{h,cpp}` | Standalone ESP32+ADS1115 EC/TDS meter (M6) — parses `$WM` ASCII frames from shared RS485 bus, dual-probe (PRE_RO / POST_RO), 60 s staleness watchdog, EC correction factor wizard (NVS persisted). |
 | `actuator_valve.{h,cpp}` | Active-low relay driver — auto-opens on sensor 1 flow via `FLOW_ACTIVE_THRESHOLD_LPM`; manual override via MQTT `valve_open`/`valve_auto` cmd keys |
 
 ---
@@ -180,15 +184,18 @@ void loop() {
 ├── log/
 │   ├── YYYY-MM-DD.csv     ← event log: leak state changes, boot events, warnings
 │   ├── sessions.csv       ← per-session log: id, start_ts, end_ts, dur, vol, peak
+│   ├── cal_sessions.csv   ← calibration events: ts, type, channel_or_zone, old_value, new_value, ref_value, duration_s
 │   └── crashes.txt        ← watchdog resets + buffer overflow records
 ├── data/
 │   └── YYYY-MM-DD.csv     ← time-series: all sensor readings, one row per 60 s
 ├── buf/
 │   └── 0000000001.json    ← unsent MQTT messages, drained FIFO on reconnect
 └── config/
-    ├── node.json              ← K-factor, SD retention, calibration, thresholds
+    ├── node.json              ← K-factor, SD retention, calibration, thresholds, AP config
     ├── flow_total.json        ← persisted flow totals + subtotals + date (SD layer)
-    └── sessions_recent.json   ← last 10 sessions ring buffer snapshot (restored on boot)
+    ├── sessions_recent.json   ← last 10 sessions ring buffer snapshot (restored on boot)
+    ├── upload_token.json      ← per-node HMAC token for relay auth: {"token":"<hex>"}
+    └── upload.html            ← self-contained upload portal page served by AP HTTP server
 ```
 
 `node.json` current schema:
@@ -215,6 +222,13 @@ void loop() {
     "debounce_us_1": 1000,
     "debounce_us_2": 500,
     "flow_avg_window": 5
+  },
+  "ap": {
+    "ssid": "twwp-wh_001",
+    "password": "",
+    "duration_s": 300,
+    "auto_on_wifi_loss": true,
+    "auto_on_loss_delay_s": 60
   }
 }
 ```
@@ -223,7 +237,7 @@ void loop() {
 
 `data/YYYY-MM-DD.csv` column header (current — columns added as sensors come online):
 ```
-ts,flow_rate_1,flow_total_1,flow_today_1,flow_rate_2,flow_total_2,flow_today_2,leak
+ts,flow_rate_1,flow_total_1,flow_today_1,flow_rate_2,flow_total_2,flow_today_2,leak,supply_voltage,wq_pre_ro_ph,wq_pre_ro_orp,wq_pre_ro_ec,wq_pre_ro_temp,wq_post_ro_ph,wq_post_ro_orp,wq_post_ro_ec,wq_post_ro_temp,wq_remin_ph,wq_remin_orp,wq_remin_ec,wq_remin_temp,tds_pre_ro_ec,tds_pre_ro_ppm,tds_post_ro_ec,tds_post_ro_ppm
 ```
 
 ---
@@ -270,7 +284,10 @@ Summary:
 | `twwp/<id>/lwt` | node → broker | `online` / `offline`, retained |
 | `twwp/<id>/session` | node → broker | Session-end event (not retained) — id, start/end ts, duration, volume, peak |
 | `twwp/<id>/sessions_recent` | node → broker | Retained JSON of last 10 sessions (newest-first). Republished on reconnect. |
-| `twwp/<id>/cmd` | broker → node | Command channel (actuator M3, OTA M4, session config) |
+| `twwp/<id>/cal_session` | node → broker | Calibration event on wizard accept. type, old/new value, ref_value, duration_s. |
+| `twwp/<id>/cmd` | broker → node | Command channel (actuator M3, OTA M4, session config, upload portal control) |
+| `twwp/<id>/ota_state` | node → broker | Dedicated retained OTA progress/status — state enum + progress %, for live dashboards |
+| `twwp/<id>/wq_config` | node → broker | Retained WQ threshold/label/name config, published on connect and after any cmd change |
 | `twwp/register` | node → broker | First-connect registration (M8) |
 | `homeassistant/...` | node → broker | HA auto-discovery configs, retained |
 

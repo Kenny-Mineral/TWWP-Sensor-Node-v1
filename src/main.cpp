@@ -26,13 +26,19 @@
 #include "sensor_temp_stub.h"
 #include "actuator_valve.h"
 #include "display_oled.h"
+#include "tank_monitor.h"
 
 #ifndef NODE_FIRMWARE_VERSION
 #define NODE_FIRMWARE_VERSION "0.0.0"
 #endif
 
 static unsigned long lastHeartbeatMs = 0;
+static unsigned long lastDiagMs      = 0;
 static uint32_t      s_restartMs     = 0;  // non-zero = deferred restart pending
+
+// Calibration session timing — records when each wizard began for duration tracking
+static unsigned long s_flowCalBeginMs[4] = {0, 0, 0, 0};   // index = channel (1, 2, or 3)
+static unsigned long s_tdsCalBeginMs[2]  = {0, 0};       // index = zone (0 or 1)
 
 static const char* leakStateText() {
     return sensorLeak_isWet() ? "WET" : "DRY";
@@ -160,8 +166,7 @@ static const char* csvIntOrBlank(char* out, size_t outLen, bool valid, int value
     return out;
 }
 
-static bool publishM0Status(bool retain, bool bufferIfOffline) {
-    JsonDocument doc;
+static void addOperationalStatus(JsonDocument& doc) {
     doc["node_id"] = NODE_ID;
     doc["firmware"] = NODE_FIRMWARE_VERSION;
     doc["leak"] = sensorLeak_isWet();
@@ -171,9 +176,6 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     int rssi = wifiUp ? WiFi.RSSI() : 0;
     doc["wifi_rssi"]       = rssi;
     doc["wifi_signal_pct"] = wifiUp ? max(0, min(100, 2 * (rssi + 100))) : 0;
-    doc["wifi_ssid"]       = wifiUp ? WiFi.SSID()            : "";
-    doc["wifi_bssid"]      = wifiUp ? WiFi.BSSIDstr()        : "";
-    doc["ip"]              = wifiUp ? WiFi.localIP().toString() : "";
     doc["wifi_status"]     = wifiUp ? "Connected" : "Disconnected";
     doc["uptime_s"]        = (uint32_t)(millis() / 1000UL);
     doc["wifi_uptime_s"]   = netWifi_getConnectedUptimeS();
@@ -186,48 +188,48 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
 
     doc["flow_rate_1"]  = sensorFlow_getRateLpm(1);
     doc["flow_rate_2"]  = sensorFlow_getRateLpm(2);
+    doc["flow_rate_3"]  = sensorFlow_getRateLpm(3);
     doc["flow_total_1"] = sensorFlow_getTotalL(1);
     doc["flow_total_2"] = sensorFlow_getTotalL(2);
+    doc["flow_total_3"] = sensorFlow_getTotalL(3);
     doc["flow_today_1"] = sensorFlow_getTodayL(1);
     doc["flow_today_2"] = sensorFlow_getTodayL(2);
+    doc["flow_today_3"] = sensorFlow_getTodayL(3);
     doc["flow_week_1"]  = sensorFlow_getWeekL(1);
     doc["flow_week_2"]  = sensorFlow_getWeekL(2);
+    doc["flow_week_3"]  = sensorFlow_getWeekL(3);
     doc["flow_month_1"] = sensorFlow_getMonthL(1);
     doc["flow_month_2"] = sensorFlow_getMonthL(2);
+    doc["flow_month_3"] = sensorFlow_getMonthL(3);
     doc["flow_year_1"]  = sensorFlow_getYearL(1);
     doc["flow_year_2"]  = sensorFlow_getYearL(2);
+    doc["flow_year_3"]  = sensorFlow_getYearL(3);
 
-    // Waste:pure ratio — litres wasted per litre purified (lower = better filter)
-    // Formula: (raw_input - pure_output) / pure_output
+    // Canonical flow map:
+    // Ch1 = user tap output (DWS-MH-02)
+    // Ch2 = RO output into tank/system (USN-HS06PE)
+    // Ch3 = raw RO input / grey-water reference (USN-HS06PS)
+    {
+        float pureRate = sensorFlow_getRateLpm(2);
+        float rawRate  = sensorFlow_getRateLpm(3);
+        doc["grey_waste_lpm"]  = (rawRate > pureRate) ? (rawRate - pureRate) : 0.0f;
+        doc["ro_efficiency"]   = (rawRate > 0.05f) ? (pureRate / rawRate * 100.0f) : 0.0f;
+        float pureToday = sensorFlow_getTodayL(2);
+        float rawToday  = sensorFlow_getTodayL(3);
+        doc["grey_waste_today"] = (rawToday > pureToday) ? (rawToday - pureToday) : 0.0f;
+    }
+
     auto calcWasteRatio = [](float purified, float raw) -> float {
         return purified > 0.0f ? (raw - purified) / purified : 0.0f;
     };
-    doc["waste_ratio_today"]  = serialized(String(calcWasteRatio(sensorFlow_getTodayL(1), sensorFlow_getTodayL(2)), 2));
-    doc["waste_ratio_week"]   = serialized(String(calcWasteRatio(sensorFlow_getWeekL(1),  sensorFlow_getWeekL(2)),  2));
-    doc["waste_ratio_month"]  = serialized(String(calcWasteRatio(sensorFlow_getMonthL(1), sensorFlow_getMonthL(2)), 2));
-    doc["waste_ratio_year"]   = serialized(String(calcWasteRatio(sensorFlow_getYearL(1),  sensorFlow_getYearL(2)),  2));
+    doc["waste_ratio_today"]  = serialized(String(calcWasteRatio(sensorFlow_getTodayL(2), sensorFlow_getTodayL(3)), 2));
+    doc["waste_ratio_week"]   = serialized(String(calcWasteRatio(sensorFlow_getWeekL(2),  sensorFlow_getWeekL(3)),  2));
+    doc["waste_ratio_month"]  = serialized(String(calcWasteRatio(sensorFlow_getMonthL(2), sensorFlow_getMonthL(3)), 2));
+    doc["waste_ratio_year"]   = serialized(String(calcWasteRatio(sensorFlow_getYearL(2),  sensorFlow_getYearL(3)),  2));
 
-    doc["sensor_model_1"] = sensorFlow_getModel(1);
-    doc["sensor_model_2"] = sensorFlow_getModel(2);
-    doc["k_factor_1"]   = sensorFlow_getKFactor(1);
-    doc["k_factor_2"]   = sensorFlow_getKFactor(2);
-    doc["k_applied_1"]  = sensorFlow_getAppliedKFactor(1);
-    doc["k_applied_2"]  = sensorFlow_getAppliedKFactor(2);
-    doc["pulses_raw_1"] = (unsigned long long)sensorFlow_getTotalPulses(1);
-    doc["pulses_raw_2"] = (unsigned long long)sensorFlow_getTotalPulses(2);
-    doc["k_table_1"] = serialized(sensorFlow_getKTableJson(1));
-    doc["k_table_2"] = serialized(sensorFlow_getKTableJson(2));
-    doc["cal_state_1"]            = sensorFlow_getCalState(1);
-    doc["cal_state_2"]            = sensorFlow_getCalState(2);
-    doc["cal_suggested_k_1"]      = sensorFlow_getCalSuggestedK(1);
-    doc["cal_suggested_k_2"]      = sensorFlow_getCalSuggestedK(2);
-    doc["cal_pulses_since_start_1"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(1);
-    doc["cal_pulses_since_start_2"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(2);
-    doc["cal_ref_vol_1"]          = sensorFlow_getCalRefVol(1);
-    doc["cal_ref_vol_2"]          = sensorFlow_getCalRefVol(2);
-    doc["debounce_us_1"] = sensorFlow_getDebounceUs(1);
-    doc["debounce_us_2"] = sensorFlow_getDebounceUs(2);
-    doc["flow_avg_window"] = sensorFlow_getFlowAvgWindow();
+    doc["tank_level_l"]    = tankMonitor_getLevelL();
+    doc["tank_level_pct"]  = tankMonitor_getLevelPct();
+    doc["tank_full"]       = tankMonitor_isFull();
     doc["session_last_id"]         = sessionFlow_getLastId();
     doc["session_last_start_ts"]   = sessionFlow_getLastStartTs();
     doc["session_last_end_ts"]     = sessionFlow_getLastEndTs();
@@ -236,60 +238,132 @@ static bool publishM0Status(bool retain, bool bufferIfOffline) {
     doc["session_last_idle_s"]     = sessionFlow_getLastIdleTimeS();
     doc["session_last_vol_out"]    = sessionFlow_getLastVolumeOut();
     doc["session_last_vol_in"]     = sessionFlow_getLastVolumeIn();
-    doc["session_enabled"]          = sessionFlow_isEnabled();
-    doc["session_idle_timeout_s"]   = sessionFlow_getIdleTimeoutS();
-    doc["flow_threshold_lpm"]       = sessionFlow_getFlowThreshold();
-    doc["leak_suspect_1"]           = sessionFlow_getLeakSuspect(1);
-    doc["leak_suspect_2"]           = sessionFlow_getLeakSuspect(2);
-    doc["ota_state"]                = (uint8_t)netOta_getState();
-    doc["ota_progress_pct"]         = netOta_getProgressPct();
-    if (netOta_getError()) {
-        doc["ota_error"] = netOta_getError();
-    }
+    doc["session_enabled"]         = sessionFlow_isEnabled();
+
+    doc["ota_state"]         = (uint8_t)netOta_getState();
+    doc["ota_progress_pct"]  = netOta_getProgressPct();
+    doc["ota_validation_pending"] = netOta_isAwaitingValidation();
+    doc["ota_rolled_back"]        = netOta_isRollbackPending();
 
     doc["supply_voltage"]         = sensorVoltage_getVoltageV();
-    doc["supply_voltage_divider"] = sensorVoltage_getDividerVoltageV();
     doc["supply_voltage_pct"]     = sensorVoltage_getPercentPct();
     doc["supply_voltage_state"]   = sensorVoltage_getState();
-    doc["voltage_v_min"]        = sensorVoltage_getVMin();
-    doc["voltage_v_max"]        = sensorVoltage_getVMax();
-    doc["voltage_cal_factor"]   = sensorVoltage_getCalFactor();
 
     doc["valve_open"] = actuatorValve_isOpen();
     doc["valve_auto"] = actuatorValve_isAuto();
+
+    addWaterQualityStatus(doc, YIERYI_ZONE_PRE_RO, "pre_ro");
+    addWaterQualityStatus(doc, YIERYI_ZONE_POST_RO, "post_ro");
+    addWaterQualityStatus(doc, YIERYI_ZONE_REMIN, "remin");
+    addTdsMeterStatus(doc, TDS_ZONE_PRE_RO,  "pre_ro");
+    addTdsMeterStatus(doc, TDS_ZONE_POST_RO, "post_ro");
+}
+
+static void addDiagnosticStatus(JsonDocument& doc) {
+    bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    doc["wifi_ssid"]  = wifiUp ? WiFi.SSID() : "";
+    doc["wifi_bssid"] = wifiUp ? WiFi.BSSIDstr() : "";
+    doc["ip"]         = wifiUp ? WiFi.localIP().toString() : "";
+
+    doc["pulses_raw_1"] = (unsigned long long)sensorFlow_getTotalPulses(1);
+    doc["pulses_raw_2"] = (unsigned long long)sensorFlow_getTotalPulses(2);
+    doc["pulses_raw_3"] = (unsigned long long)sensorFlow_getTotalPulses(3);
+    doc["k_applied_1"]  = sensorFlow_getAppliedKFactor(1);
+    doc["k_applied_2"]  = sensorFlow_getAppliedKFactor(2);
+    doc["k_applied_3"]  = sensorFlow_getAppliedKFactor(3);
+    doc["flow_avg_window_1"] = sensorFlow_getFlowAvgWindowRate(1);
+    doc["flow_avg_window_2"] = sensorFlow_getFlowAvgWindowRate(2);
+    doc["flow_avg_window_3"] = sensorFlow_getFlowAvgWindowRate(3);
+    doc["cal_state_1"]  = sensorFlow_getCalState(1);
+    doc["cal_state_2"]  = sensorFlow_getCalState(2);
+    doc["cal_state_3"]  = sensorFlow_getCalState(3);
+    doc["cal_suggested_k_1"] = sensorFlow_getCalSuggestedK(1);
+    doc["cal_suggested_k_2"] = sensorFlow_getCalSuggestedK(2);
+    doc["cal_suggested_k_3"] = sensorFlow_getCalSuggestedK(3);
+    doc["cal_pulses_since_start_1"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(1);
+    doc["cal_pulses_since_start_2"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(2);
+    doc["cal_pulses_since_start_3"] = (unsigned long long)sensorFlow_getCalPulsesSinceStart(3);
+    if (netOta_getError()) {
+        doc["ota_error"] = netOta_getError();
+    }
+    doc["supply_voltage_divider"] = sensorVoltage_getDividerVoltageV();
+}
+
+static void addConfigStatus(JsonDocument& doc) {
+    doc["sensor_model_1"] = sensorFlow_getModel(1);
+    doc["sensor_model_2"] = sensorFlow_getModel(2);
+    doc["sensor_model_3"] = sensorFlow_getModel(3);
+    doc["k_factor_1"]     = sensorFlow_getKFactor(1);
+    doc["k_factor_2"]     = sensorFlow_getKFactor(2);
+    doc["k_factor_3"]     = sensorFlow_getKFactor(3);
+    doc["k_table_1"]      = serialized(sensorFlow_getKTableJson(1));
+    doc["k_table_2"]      = serialized(sensorFlow_getKTableJson(2));
+    doc["k_table_3"]      = serialized(sensorFlow_getKTableJson(3));
+    doc["cal_ref_vol_1"]  = sensorFlow_getCalRefVol(1);
+    doc["cal_ref_vol_2"]  = sensorFlow_getCalRefVol(2);
+    doc["cal_ref_vol_3"]  = sensorFlow_getCalRefVol(3);
+    doc["debounce_us_1"]  = sensorFlow_getDebounceUs(1);
+    doc["debounce_us_2"]  = sensorFlow_getDebounceUs(2);
+    doc["debounce_us_3"]  = sensorFlow_getDebounceUs(3);
+    doc["flow_avg_window"] = sensorFlow_getFlowAvgWindow();
+
+    doc["tank_capacity_l"]       = tankMonitor_getCapacityL();
+    doc["session_idle_timeout_s"] = sessionFlow_getIdleTimeoutS();
+    doc["flow_threshold_lpm"]     = sessionFlow_getFlowThreshold();
+
+    doc["voltage_v_min"]      = sensorVoltage_getVMin();
+    doc["voltage_v_max"]      = sensorVoltage_getVMax();
+    doc["voltage_cal_factor"] = sensorVoltage_getCalFactor();
+
     doc["valve_type"]                 = actuatorValve_getValveType();
     doc["trigger_source"]             = actuatorValve_getTriggerSource();
     doc["valve_idle_timeout_s"]       = actuatorValve_getIdleTimeoutS();
     doc["valve_max_open_s"]           = actuatorValve_getMaxOpenS();
     doc["valve_timeout_disable_auto"] = actuatorValve_getTimeoutDisableAuto();
     doc["valve_timeout_alert"]        = actuatorValve_getTimeoutAlert();
+}
 
-    addWaterQualityStatus(doc, YIERYI_ZONE_PRE_RO, "pre_ro");
-    addWaterQualityStatus(doc, YIERYI_ZONE_POST_RO, "post_ro");
-    addWaterQualityStatus(doc, YIERYI_ZONE_REMIN, "remin");
-
-    addTdsMeterStatus(doc, TDS_ZONE_PRE_RO,  "pre_ro");
-    addTdsMeterStatus(doc, TDS_ZONE_POST_RO, "post_ro");
-
-    char payload[4096];
+static bool publishJsonStatusTopic(const char* topic, JsonDocument& doc, bool retain, bool bufferIfOffline, const char* serialPrefix) {
+    char payload[6144];
     if (!serializeDoc(doc, payload, sizeof(payload))) {
-        Serial.println("[M0] status JSON too large");
+        Serial.printf("[MQTT] %s JSON too large\n", serialPrefix);
         return false;
     }
 
     if (netMqtt_isConnected()) {
-        bool ok = netMqtt_publish(TOPIC_STATUS, payload, retain);
+        bool ok = netMqtt_publish(topic, payload, retain);
         if (ok) {
-            Serial.print("[M0] status ");
+            Serial.print(serialPrefix);
+            Serial.print(' ');
             Serial.println(payload);
         }
         return ok;
     }
 
     if (bufferIfOffline) {
-        netMqtt_publishSub(TOPIC_STATUS, payload);
+        netMqtt_publishSub(topic, payload);
     }
     return false;
+}
+
+static bool publishM0Status(bool retain, bool bufferIfOffline) {
+    JsonDocument doc;
+    addOperationalStatus(doc);
+    doc["leak_suspect_1"] = sessionFlow_getLeakSuspect(1);
+    doc["leak_suspect_2"] = sessionFlow_getLeakSuspect(2);
+    return publishJsonStatusTopic(TOPIC_STATUS, doc, retain, bufferIfOffline, "[M0] status");
+}
+
+static bool publishDiagStatus(bool retain) {
+    JsonDocument doc;
+    addDiagnosticStatus(doc);
+    return publishJsonStatusTopic(TOPIC_STATUS_DIAG, doc, retain, false, "[M0] status_diag");
+}
+
+static bool publishConfigStatus(bool retain) {
+    JsonDocument doc;
+    addConfigStatus(doc);
+    return publishJsonStatusTopic(TOPIC_STATUS_CFG, doc, retain, false, "[M0] status_cfg");
 }
 
 static void serviceSerialConsole() {
@@ -501,12 +575,13 @@ static bool publishHaFlowSensor(const char* uid, const char* name, const char* v
                                  const char* stateClass,
                                  const char* subId, const char* subName,
                                  const char* sensorModel,
-                                 const char* entityCategory = nullptr) {
+                                 const char* entityCategory = nullptr,
+                                 const char* stateTopic = TOPIC_STATUS) {
     JsonDocument doc;
     doc["name"]       = name;
     doc["unique_id"]  = uid;
     doc["object_id"]  = uid;
-    doc["state_topic"] = TOPIC_STATUS;
+    doc["state_topic"] = stateTopic;
     char tmpl[64];
     snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
     doc["value_template"]      = tmpl;
@@ -537,37 +612,54 @@ static bool publishHaFlowSensor(const char* uid, const char* name, const char* v
 static bool publishHaDiscoveryFlow() {
     bool ok = true;
 
-    // Channel 1 — RO Output (USN-HS06PE, GPIO4)
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_1",  "Output Flow Rate",  "flow_rate_1",  "L/min", "volume_flow_rate", "measurement",     "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_1", "Output Flow Total", "flow_total_1", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_1", "Output Today",      "flow_today_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_1",  "Output This Week",  "flow_week_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_1", "Output This Month", "flow_month_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_1",  "Output This Year",  "flow_year_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
+    // Channel 1 — User Tap Output (DWS-MH-02, GPIO4)
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_1",  "Tap Output Flow Rate",  "flow_rate_1",  "L/min", "volume_flow_rate", "measurement",     "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_1", "Tap Output Flow Total", "flow_total_1", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_1", "Tap Output Today",      "flow_today_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_1",  "Tap Output This Week",  "flow_week_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_1", "Tap Output This Month", "flow_month_1", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_1",  "Tap Output This Year",  "flow_year_1",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
 
-    // Channel 2 — RO Input (USN-HS06PS, GPIO5)
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_2",  "Input Flow Rate",  "flow_rate_2",  "L/min", "volume_flow_rate", "measurement",     "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_2", "Input Flow Total", "flow_total_2", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_2", "Input Today",      "flow_today_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_2",  "Input This Week",  "flow_week_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_2", "Input This Month", "flow_month_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_2",  "Input This Year",  "flow_year_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
+    // Channel 2 — RO Output To Tank/System (USN-HS06PE, GPIO5)
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_2",  "RO Output Flow Rate",  "flow_rate_2",  "L/min", "volume_flow_rate", "measurement",     "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_2", "RO Output Flow Total", "flow_total_2", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_2", "RO Output Today",      "flow_today_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_2",  "RO Output This Week",  "flow_week_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_2", "RO Output This Month", "flow_month_2", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_2",  "RO Output This Year",  "flow_year_2",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+
+    // Channel 3 — Raw RO Input / Grey-Water Reference (USN-HS06PS, GPIO7)
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_rate_3",  "RO Input Flow Rate",   "flow_rate_3",  "L/min", "volume_flow_rate", "measurement",     "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_total_3", "RO Input Flow Total",  "flow_total_3", "L",     "water",            "total_increasing","twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_today_3", "RO Input Today",       "flow_today_3", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_week_3",  "RO Input Week",        "flow_week_3",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_month_3", "RO Input Month",       "flow_month_3", "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_year_3",  "RO Input Year",        "flow_year_3",  "L",     "",                 "measurement",     "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
+
+    // Derived RO efficiency sensors (on main device, not sub-device)
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_grey_waste_lpm",  "Grey Water Rate",    "grey_waste_lpm",  "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID, "", "");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_grey_waste_today","Grey Water Today",   "grey_waste_today","L",     "",                 "measurement", "twwp_" NODE_ID, "", "");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_ro_efficiency",   "RO Recovery",        "ro_efficiency",   "%",     "",                 "measurement", "twwp_" NODE_ID, "", "");
 
     // Diagnostic raw pulse sensors (total_increasing, never reset)
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_pulses_raw_1",  "Output Raw Pulses",  "pulses_raw_1",  "pulses", "", "total_increasing", "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE", "diagnostic");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_pulses_raw_2",  "Input Raw Pulses",   "pulses_raw_2",  "pulses", "", "total_increasing", "twwp_" NODE_ID "_flow2", "RO Input",  "USN-HS06PS", "diagnostic");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_pulses_raw_1",  "Tap Output Raw Pulses", "pulses_raw_1", "pulses", "", "total_increasing", "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_pulses_raw_2",  "RO Output Raw Pulses",  "pulses_raw_2", "pulses", "", "total_increasing", "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_pulses_raw_3",  "RO Input Raw Pulses",   "pulses_raw_3", "pulses", "", "total_increasing", "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS", "diagnostic", TOPIC_STATUS_DIAG);
 
     // Diagnostic applied K-factor sensors
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_k_applied_1",   "Output Applied K",   "k_applied_1",   "pulses/L", "", "measurement",      "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE", "diagnostic");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_k_applied_2",   "Input Applied K",    "k_applied_2",   "pulses/L", "", "measurement",      "twwp_" NODE_ID "_flow2", "RO Input",  "USN-HS06PS", "diagnostic");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_k_applied_1", "Tap Output Applied K", "k_applied_1", "pulses/L", "", "measurement", "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_k_applied_2", "RO Output Applied K",  "k_applied_2", "pulses/L", "", "measurement", "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_k_applied_3", "RO Input Applied K",   "k_applied_3", "pulses/L", "", "measurement", "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS", "diagnostic", TOPIC_STATUS_DIAG);
 
     // Diagnostic smoothed/averaged flow rate sensors
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_avg_window_1", "Output Smoothed Flow", "flow_avg_window_1", "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE", "diagnostic");
-    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_avg_window_2", "Input Smoothed Flow",  "flow_avg_window_2", "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID "_flow2", "RO Input",  "USN-HS06PS", "diagnostic");
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_avg_window_1", "Tap Output Smoothed Flow", "flow_avg_window_1", "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_avg_window_2", "RO Output Smoothed Flow",  "flow_avg_window_2", "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE", "diagnostic", TOPIC_STATUS_DIAG);
+    ok &= publishHaFlowSensor("twwp_" NODE_ID "_flow_avg_window_3", "RO Input Smoothed Flow",   "flow_avg_window_3", "L/min", "volume_flow_rate", "measurement", "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS", "diagnostic", TOPIC_STATUS_DIAG);
 
     // Clear any old sensor discovery entries for K factors (published before number entities existed)
     netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_1/config", "", true);
     netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_2/config", "", true);
+    netMqtt_publish("homeassistant/sensor/twwp_" NODE_ID "_k_factor_3/config", "", true);
 
     // K factor writable number entities
     auto publishKFactorNumber = [&ok](const char* uid, const char* name,
@@ -578,7 +670,7 @@ static bool publishHaDiscoveryFlow() {
         doc["name"]       = name;
         doc["unique_id"]  = uid;
         doc["object_id"]  = uid;
-        doc["state_topic"] = TOPIC_STATUS;
+        doc["state_topic"] = TOPIC_STATUS_CFG;
         char tmpl[64];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s | int }}", valueKey);
         doc["value_template"]      = tmpl;
@@ -609,12 +701,15 @@ static bool publishHaDiscoveryFlow() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    publishKFactorNumber("twwp_" NODE_ID "_k_factor_1", "Output K Factor",
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_1", "Tap Output K Factor",
                          "k_factor_1", "set_k_factor_1",
-                         "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    publishKFactorNumber("twwp_" NODE_ID "_k_factor_2", "Input K Factor",
+                         "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_2", "RO Output K Factor",
                          "k_factor_2", "set_k_factor_2",
-                         "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
+                         "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    publishKFactorNumber("twwp_" NODE_ID "_k_factor_3", "RO Input K Factor",
+                         "k_factor_3", "set_k_factor_3",
+                         "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
 
     // --- K-table text entities (JSON array strings) ---
     auto publishKTableText = [&ok](const char* uid, const char* name,
@@ -626,7 +721,7 @@ static bool publishHaDiscoveryFlow() {
         doc["unique_id"]         = uid;
         doc["object_id"]         = uid;
         doc["entity_category"]   = "config";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s | tojson }}", valueKey);
         doc["value_template"]    = tmpl;
@@ -653,12 +748,15 @@ static bool publishHaDiscoveryFlow() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    publishKTableText("twwp_" NODE_ID "_k_table_1", "Output K Table",
+    publishKTableText("twwp_" NODE_ID "_k_table_1", "Tap Output K Table",
                       "k_table_1", "set_k_table_1",
-                      "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    publishKTableText("twwp_" NODE_ID "_k_table_2", "Input K Table",
+                      "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    publishKTableText("twwp_" NODE_ID "_k_table_2", "RO Output K Table",
                       "k_table_2", "set_k_table_2",
-                      "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
+                      "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    publishKTableText("twwp_" NODE_ID "_k_table_3", "RO Input K Table",
+                      "k_table_3", "set_k_table_3",
+                      "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
 
     // --- Debounce number entities ---
     auto publishDebounceNumber = [&ok](const char* uid, const char* name,
@@ -670,7 +768,7 @@ static bool publishHaDiscoveryFlow() {
         doc["unique_id"]         = uid;
         doc["object_id"]         = uid;
         doc["entity_category"]   = "config";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         char tmpl[64];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s | int }}", valueKey);
         doc["value_template"]    = tmpl;
@@ -700,21 +798,24 @@ static bool publishHaDiscoveryFlow() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    publishDebounceNumber("twwp_" NODE_ID "_debounce_us_1", "Output Debounce",
+    publishDebounceNumber("twwp_" NODE_ID "_debounce_us_1", "Tap Output Debounce",
                           "debounce_us_1", "set_debounce_us_1",
-                          "twwp_" NODE_ID "_flow1", "RO Output", "USN-HS06PE");
-    publishDebounceNumber("twwp_" NODE_ID "_debounce_us_2", "Input Debounce",
+                          "twwp_" NODE_ID "_flow1", "Tap Output", "DWS-MH-02");
+    publishDebounceNumber("twwp_" NODE_ID "_debounce_us_2", "RO Output Debounce",
                           "debounce_us_2", "set_debounce_us_2",
-                          "twwp_" NODE_ID "_flow2", "RO Input", "USN-HS06PS");
+                          "twwp_" NODE_ID "_flow2", "RO Output", "USN-HS06PE");
+    publishDebounceNumber("twwp_" NODE_ID "_debounce_us_3", "RO Input Debounce",
+                          "debounce_us_3", "set_debounce_us_3",
+                          "twwp_" NODE_ID "_flow3", "RO Input", "USN-HS06PS");
 
-    // --- Flow average window number entity (shared across both channels) ---
+    // --- Flow average window number entity (shared across all channels) ---
     {
         JsonDocument doc;
         doc["name"]              = "Flow Average Window";
         doc["unique_id"]         = "twwp_" NODE_ID "_flow_avg_window";
         doc["object_id"]         = "twwp_" NODE_ID "_flow_avg_window";
         doc["entity_category"]   = "config";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         doc["value_template"]    = "{{ value_json.flow_avg_window | int }}";
         doc["command_topic"]     = TOPIC_CMD;
         doc["command_template"]  = "{\"set_flow_avg_window\": {{ value | int }}}";
@@ -754,7 +855,7 @@ static bool publishHaDiscoveryFlow() {
             doc["object_id"]       = uid;
             doc["entity_category"] = "config";
             doc["icon"]            = "mdi:pulse";
-            doc["state_topic"]     = TOPIC_STATUS;
+            doc["state_topic"]     = TOPIC_STATUS_CFG;
             char tmpl[64];
             snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
             doc["value_template"]   = tmpl;
@@ -785,16 +886,116 @@ static bool publishHaDiscoveryFlow() {
             if (!netMqtt_publish(topic, payload, true)) ok = false;
         };
 
-        publishModelSelect("twwp_" NODE_ID "_sensor_model_1", "Output Sensor Model",
+        publishModelSelect("twwp_" NODE_ID "_sensor_model_1", "Tap Output Sensor Model",
                            "sensor_model_1", "set_sensor_model_1",
-                           "twwp_" NODE_ID "_flow1", "RO Output");
-        publishModelSelect("twwp_" NODE_ID "_sensor_model_2", "Input Sensor Model",
+                           "twwp_" NODE_ID "_flow1", "Tap Output");
+        publishModelSelect("twwp_" NODE_ID "_sensor_model_2", "RO Output Sensor Model",
                            "sensor_model_2", "set_sensor_model_2",
-                           "twwp_" NODE_ID "_flow2", "RO Input");
+                           "twwp_" NODE_ID "_flow2", "RO Output");
+        publishModelSelect("twwp_" NODE_ID "_sensor_model_3", "RO Input Sensor Model",
+                           "sensor_model_3", "set_sensor_model_3",
+                           "twwp_" NODE_ID "_flow3", "RO Input");
     }
 
     Serial.print("[MQTT] HA flow discovery ");
     Serial.println(ok ? "published" : "partial");
+    return ok;
+}
+
+static bool publishHaDiscoveryTank() {
+    bool ok = true;
+    auto pub = [&ok](const char* uid, const char* name, const char* vk,
+                     const char* unit, const char* devClass, const char* stateClass,
+                     const char* domain = "sensor") {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
+        char tmpl[80]; snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", vk);
+        doc["value_template"]   = tmpl;
+        if (unit && unit[0])      doc["unit_of_measurement"] = unit;
+        if (devClass && devClass[0]) doc["device_class"]     = devClass;
+        if (stateClass && stateClass[0]) doc["state_class"]  = stateClass;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768]; char topic[128];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        snprintf(topic, sizeof(topic), "homeassistant/%s/%s/config", domain, uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+    auto pubNum = [&ok](const char* uid, const char* name, const char* vk,
+                        const char* ck, const char* unit,
+                        float mn, float mx, float step) {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["entity_category"]  = "config";
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
+        char tmpl[80]; snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", vk);
+        doc["value_template"]   = tmpl;
+        doc["command_topic"]    = TOPIC_CMD;
+        char ctmpl[80]; snprintf(ctmpl, sizeof(ctmpl), "{\"%s\": {{ value }}}", ck);
+        doc["command_template"] = ctmpl;
+        if (unit && unit[0]) doc["unit_of_measurement"] = unit;
+        doc["min"] = mn; doc["max"] = mx; doc["step"] = step; doc["mode"] = "box";
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[768]; char topic[128];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        snprintf(topic, sizeof(topic), "homeassistant/number/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+    auto pubBtn = [&ok](const char* uid, const char* name, const char* pp) {
+        JsonDocument doc;
+        doc["name"]              = name;
+        doc["unique_id"]         = uid;
+        doc["object_id"]         = uid;
+        doc["entity_category"]   = "config";
+        doc["command_topic"]     = TOPIC_CMD;
+        doc["payload_press"]     = pp;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640]; char topic[128];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        snprintf(topic, sizeof(topic), "homeassistant/button/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+    auto pubBin = [&ok](const char* uid, const char* name, const char* vk,
+                        const char* devClass) {
+        JsonDocument doc;
+        doc["name"]             = name;
+        doc["unique_id"]        = uid;
+        doc["object_id"]        = uid;
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
+        char tmpl[80]; snprintf(tmpl, sizeof(tmpl), "{{ 'ON' if value_json.%s else 'OFF' }}", vk);
+        doc["value_template"]   = tmpl;
+        if (devClass && devClass[0]) doc["device_class"] = devClass;
+        doc["availability_topic"]    = TOPIC_LWT;
+        doc["payload_available"]     = "online";
+        doc["payload_not_available"] = "offline";
+        fillHaDevice(doc);
+        char payload[640]; char topic[128];
+        if (!serializeDoc(doc, payload, sizeof(payload))) { ok = false; return; }
+        snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/%s/config", uid);
+        if (!netMqtt_publish(topic, payload, true)) ok = false;
+    };
+
+    pub("twwp_" NODE_ID "_tank_level_l",   "Tank Level",    "tank_level_l",   "L",  "",       "measurement");
+    pub("twwp_" NODE_ID "_tank_level_pct", "Tank Level %",  "tank_level_pct", "%",  "",       "measurement");
+    pubBin("twwp_" NODE_ID "_tank_full",   "Tank Full",     "tank_full",      "");
+    pubNum("twwp_" NODE_ID "_tank_capacity_l", "Tank Capacity",
+           "tank_capacity_l", "set_tank_capacity_l", "L", 5.0f, 30.0f, 0.1f);
+    pubBtn("twwp_" NODE_ID "_tank_reset_empty", "Reset Tank to Empty",
+           "{\"tank_reset_empty\": 1}");
+
     return ok;
 }
 
@@ -827,13 +1028,14 @@ static bool publishHaDiscovery() {
 
 static bool publishHaDiagSensor(const char* uid, const char* name, const char* valueKey,
                                   const char* unit, const char* deviceClass,
-                                  const char* stateClass) {
+                                  const char* stateClass,
+                                  const char* stateTopic = TOPIC_STATUS) {
     JsonDocument doc;
     doc["name"]              = name;
     doc["unique_id"]         = uid;
     doc["object_id"]         = uid;
     doc["entity_category"]   = "diagnostic";
-    doc["state_topic"]       = TOPIC_STATUS;
+    doc["state_topic"]       = stateTopic;
     char tmpl[64];
     snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
     doc["value_template"]      = tmpl;
@@ -864,7 +1066,7 @@ static bool publishHaDiscoverySession() {
         doc["name"]             = name;
         doc["unique_id"]        = uid;
         doc["object_id"]        = uid;
-        doc["state_topic"]      = TOPIC_STATUS;
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
         doc["value_template"]      = tmpl;
@@ -904,7 +1106,7 @@ static bool publishHaDiscoverySessionConfig() {
         doc["unique_id"]  = uid;
         doc["object_id"]  = uid;
         doc["entity_category"] = "config";
-        doc["state_topic"] = TOPIC_STATUS;
+        doc["state_topic"] = TOPIC_STATUS_CFG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
         doc["value_template"]  = tmpl;
@@ -967,8 +1169,8 @@ static bool publishHaDiscoverySessionsRecent() {
 
     // Leak suspect binary sensors
     struct { const char* uid; const char* name; const char* valueKey; } leakEntries[] = {
-        { "twwp_" NODE_ID "_leak_suspect_1", "Output Leak Suspect", "leak_suspect_1" },
-        { "twwp_" NODE_ID "_leak_suspect_2", "Input Leak Suspect",  "leak_suspect_2" },
+        { "twwp_" NODE_ID "_leak_suspect_1", "Tap Output Leak Suspect", "leak_suspect_1" },
+        { "twwp_" NODE_ID "_leak_suspect_2", "RO Output Leak Suspect",  "leak_suspect_2" },
     };
     for (auto& e : leakEntries) {
         JsonDocument doc;
@@ -1023,29 +1225,29 @@ static bool publishHaDiscoveryResetButtons() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    // RO Output (ch1) — granular period resets + full channel reset
+    // Tap Output (ch1) — granular period resets + full channel reset
     pubButton("twwp_" NODE_ID "_reset_today_1",  "Reset Today",
-              "{\"reset_flow_today_1\": true}",  "twwp_" NODE_ID "_flow1", "RO Output");
+              "{\"reset_flow_today_1\": true}",  "twwp_" NODE_ID "_flow1", "Tap Output");
     pubButton("twwp_" NODE_ID "_reset_week_1",   "Reset This Week",
-              "{\"reset_flow_week_1\": true}",   "twwp_" NODE_ID "_flow1", "RO Output");
+              "{\"reset_flow_week_1\": true}",   "twwp_" NODE_ID "_flow1", "Tap Output");
     pubButton("twwp_" NODE_ID "_reset_month_1",  "Reset This Month",
-              "{\"reset_flow_month_1\": true}",  "twwp_" NODE_ID "_flow1", "RO Output");
+              "{\"reset_flow_month_1\": true}",  "twwp_" NODE_ID "_flow1", "Tap Output");
     pubButton("twwp_" NODE_ID "_reset_year_1",   "Reset This Year",
-              "{\"reset_flow_year_1\": true}",   "twwp_" NODE_ID "_flow1", "RO Output");
+              "{\"reset_flow_year_1\": true}",   "twwp_" NODE_ID "_flow1", "Tap Output");
     pubButton("twwp_" NODE_ID "_reset_totals_1", "Reset All Data",
-              "{\"reset_flow_totals_1\": true}", "twwp_" NODE_ID "_flow1", "RO Output");
+              "{\"reset_flow_totals_1\": true}", "twwp_" NODE_ID "_flow1", "Tap Output");
 
-    // RO Input (ch2) — granular period resets + full channel reset
+    // RO Output (ch2) — granular period resets + full channel reset
     pubButton("twwp_" NODE_ID "_reset_today_2",  "Reset Today",
-              "{\"reset_flow_today_2\": true}",  "twwp_" NODE_ID "_flow2", "RO Input");
+              "{\"reset_flow_today_2\": true}",  "twwp_" NODE_ID "_flow2", "RO Output");
     pubButton("twwp_" NODE_ID "_reset_week_2",   "Reset This Week",
-              "{\"reset_flow_week_2\": true}",   "twwp_" NODE_ID "_flow2", "RO Input");
+              "{\"reset_flow_week_2\": true}",   "twwp_" NODE_ID "_flow2", "RO Output");
     pubButton("twwp_" NODE_ID "_reset_month_2",  "Reset This Month",
-              "{\"reset_flow_month_2\": true}",  "twwp_" NODE_ID "_flow2", "RO Input");
+              "{\"reset_flow_month_2\": true}",  "twwp_" NODE_ID "_flow2", "RO Output");
     pubButton("twwp_" NODE_ID "_reset_year_2",   "Reset This Year",
-              "{\"reset_flow_year_2\": true}",   "twwp_" NODE_ID "_flow2", "RO Input");
+              "{\"reset_flow_year_2\": true}",   "twwp_" NODE_ID "_flow2", "RO Output");
     pubButton("twwp_" NODE_ID "_reset_totals_2", "Reset All Data",
-              "{\"reset_flow_totals_2\": true}", "twwp_" NODE_ID "_flow2", "RO Input");
+              "{\"reset_flow_totals_2\": true}", "twwp_" NODE_ID "_flow2", "RO Output");
 
     // Main node card — factory reset (all channels + session ID)
     pubButton("twwp_" NODE_ID "_factory_reset_flow", "Factory Reset All Flow Data",
@@ -1149,9 +1351,9 @@ static bool publishHaDiscoveryDiagnostics() {
     }
 
     // Sensor entities
-    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_ssid",       "TWWP " NODE_ID " WiFi SSID",         "wifi_ssid",       "",     "",               "");
-    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_bssid",      "TWWP " NODE_ID " WiFi BSSID",        "wifi_bssid",      "",     "",               "");
-    ok &= publishHaDiagSensor("twwp_" NODE_ID "_ip",              "TWWP " NODE_ID " IP Address",        "ip",              "",     "",               "");
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_ssid",       "TWWP " NODE_ID " WiFi SSID",         "wifi_ssid",       "",     "",               "", TOPIC_STATUS_DIAG);
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_bssid",      "TWWP " NODE_ID " WiFi BSSID",        "wifi_bssid",      "",     "",               "", TOPIC_STATUS_DIAG);
+    ok &= publishHaDiagSensor("twwp_" NODE_ID "_ip",              "TWWP " NODE_ID " IP Address",        "ip",              "",     "",               "", TOPIC_STATUS_DIAG);
     ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_rssi",       "TWWP " NODE_ID " WiFi Signal dB",    "wifi_rssi",       "dBm",  "signal_strength", "measurement");
     ok &= publishHaDiagSensor("twwp_" NODE_ID "_wifi_signal_pct", "TWWP " NODE_ID " WiFi Signal",       "wifi_signal_pct", "%",    "",               "measurement");
     ok &= publishHaDiagSensor("twwp_" NODE_ID "_uptime_s",        "TWWP " NODE_ID " Running Time",      "uptime_s",        "s",    "duration",       "measurement");
@@ -1164,9 +1366,9 @@ static bool publishHaDiscoveryDiagnostics() {
 static bool publishHaDiscoveryOta() {
     bool ok = true;
     ok &= publishHaDiagSensor("twwp_" NODE_ID "_ota_state", "TWWP " NODE_ID " OTA State",
-                              "ota_state", "", "", "measurement");
+                              "ota_state", "", "", "measurement", TOPIC_STATUS);
     ok &= publishHaDiagSensor("twwp_" NODE_ID "_ota_progress", "TWWP " NODE_ID " OTA Progress",
-                              "ota_progress_pct", "%", "", "measurement");
+                              "ota_progress_pct", "%", "", "measurement", TOPIC_STATUS);
 
     Serial.print("[MQTT] HA OTA discovery ");
     Serial.println(ok ? "published" : "partial");
@@ -1230,7 +1432,7 @@ static bool publishHaDiscoveryVoltage() {
         doc["state_class"]         = "measurement";
         doc["entity_category"]     = "diagnostic";
         doc["unit_of_measurement"] = "V";
-        doc["state_topic"]         = TOPIC_STATUS;
+        doc["state_topic"]         = TOPIC_STATUS_DIAG;
         doc["value_template"]      = "{{ value_json.supply_voltage_divider | round(3) }}";
         doc["availability_topic"]   = TOPIC_LWT;
         doc["payload_available"]    = "online";
@@ -1249,7 +1451,7 @@ static bool publishHaDiscoveryVoltage() {
         doc["name"]              = "TWWP " NODE_ID " Battery State";
         doc["unique_id"]         = "twwp_" NODE_ID "_supply_voltage_state";
         doc["object_id"]         = "twwp_" NODE_ID "_supply_voltage_state";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         doc["value_template"]    = "{{ value_json.supply_voltage_state }}";
         doc["icon"]              = "mdi:battery-charging";
         doc["availability_topic"]   = TOPIC_LWT;
@@ -1272,7 +1474,7 @@ static bool publishHaDiscoveryVoltage() {
         doc["unique_id"]         = uid;
         doc["object_id"]         = uid;
         doc["entity_category"]   = "config";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
         doc["value_template"]    = tmpl;
@@ -1308,7 +1510,7 @@ static bool publishHaDiscoveryVoltage() {
         doc["unique_id"]         = "twwp_" NODE_ID "_voltage_cal_factor";
         doc["object_id"]         = "twwp_" NODE_ID "_voltage_cal_factor";
         doc["entity_category"]   = "config";
-        doc["state_topic"]       = TOPIC_STATUS;
+        doc["state_topic"]       = TOPIC_STATUS_CFG;
         doc["value_template"]    = "{{ value_json.voltage_cal_factor }}";
         doc["command_topic"]     = TOPIC_CMD;
         doc["command_template"]  = "{\"set_voltage_cal\": {{ value }}}";
@@ -1377,7 +1579,7 @@ static bool publishHaDiscoveryValveConfig() {
         doc["unique_id"]        = s.uid;
         doc["object_id"]        = s.uid;
         doc["entity_category"]  = "config";
-        doc["state_topic"]      = TOPIC_STATUS;
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", s.valueKey);
         doc["value_template"]   = tmpl;
@@ -1412,7 +1614,7 @@ static bool publishHaDiscoveryValveConfig() {
         doc["unique_id"]        = n.uid;
         doc["object_id"]        = n.uid;
         doc["entity_category"]  = "config";
-        doc["state_topic"]      = TOPIC_STATUS;
+        doc["state_topic"]      = TOPIC_STATUS_DIAG;
         char tmpl[80];
         snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", n.valueKey);
         doc["value_template"]   = tmpl;
@@ -1455,7 +1657,7 @@ static bool publishHaDiscoveryValveConfig() {
         doc["unique_id"]        = sw.uid;
         doc["object_id"]        = sw.uid;
         doc["entity_category"]  = "config";
-        doc["state_topic"]      = TOPIC_STATUS;
+        doc["state_topic"]      = TOPIC_STATUS_CFG;
         char tmpl[96];
         snprintf(tmpl, sizeof(tmpl), "{{ 'ON' if value_json.%s else 'OFF' }}", sw.valueKey);
         doc["value_template"]   = tmpl;
@@ -1521,12 +1723,13 @@ static bool publishHaDiscoveryEfficiency() {
 static bool publishHaWaterQualitySensor(const char* uid, const char* name, const char* valueKey,
                                         const char* unit, const char* deviceClass,
                                         const char* stateClass, const char* subId,
-                                        const char* subName) {
+                                        const char* subName,
+                                        const char* stateTopic = TOPIC_STATUS) {
     JsonDocument doc;
     doc["name"]       = name;
     doc["unique_id"]  = uid;
     doc["object_id"]  = uid;
-    doc["state_topic"] = TOPIC_STATUS;
+    doc["state_topic"] = stateTopic;
     char tmpl[80];
     snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", valueKey);
     doc["value_template"] = tmpl;
@@ -1602,17 +1805,17 @@ static bool publishHaDiscoveryWaterQuality() {
         snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ph_cal_date", z.suffix);
         snprintf(key, sizeof(key), "wq_%s_ph_cal_date", z.suffix);
         snprintf(name, sizeof(name), "%s pH Cal Date", z.name);
-        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name, TOPIC_STATUS_CFG);
 
         snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_orp_cal_date", z.suffix);
         snprintf(key, sizeof(key), "wq_%s_orp_cal_date", z.suffix);
         snprintf(name, sizeof(name), "%s ORP Cal Date", z.name);
-        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name, TOPIC_STATUS_CFG);
 
         snprintf(uid, sizeof(uid), "twwp_" NODE_ID "_wq_%s_ec_cal_date", z.suffix);
         snprintf(key, sizeof(key), "wq_%s_ec_cal_date", z.suffix);
         snprintf(name, sizeof(name), "%s EC Cal Date", z.name);
-        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name);
+        ok &= publishHaWaterQualitySensor(uid, name, key, "", "", "", z.subId, z.name, TOPIC_STATUS_CFG);
     }
 
     Serial.print("[MQTT] HA water quality discovery ");
@@ -1860,12 +2063,13 @@ static bool publishHaDiscoveryCalibration() {
         if (!netMqtt_publish(topic, payload, true)) ok = false;
     };
 
-    // ── Flow calibration (ch1 = Output, ch2 = Input) ─────────────────────────
+    // ── Flow calibration (ch1 = Tap Output, ch2 = RO Output, ch3 = RO Input) ─
 
     struct FlowChDef { const char* suffix; const char* label; const char* subId; int ch; };
     const FlowChDef flowChs[] = {
-        { "1", "Output", "twwp_" NODE_ID "_flow1", 1 },
-        { "2", "Input",  "twwp_" NODE_ID "_flow2", 2 },
+        { "1", "Tap Output", "twwp_" NODE_ID "_flow1", 1 },
+        { "2", "RO Output",  "twwp_" NODE_ID "_flow2", 2 },
+        { "3", "RO Input",   "twwp_" NODE_ID "_flow3", 3 },
     };
 
     for (const auto& ch : flowChs) {
@@ -1907,6 +2111,18 @@ static bool publishHaDiscoveryCalibration() {
         snprintf(name, sizeof(name), "%s Cal Suggested K",                    ch.label);
         snprintf(vk,   sizeof(vk),   "cal_suggested_k_%s",                    ch.suffix);
         pubDiagSensor(uid, name, vk, "pulses/L", ch.subId, ch.label);
+
+        // Cal state diagnostic sensor (idle / collecting / done)
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_cal_state_%s",         ch.suffix);
+        snprintf(name, sizeof(name), "%s Cal State",                           ch.label);
+        snprintf(vk,   sizeof(vk),   "cal_state_%s",                           ch.suffix);
+        pubDiagSensor(uid, name, vk, "", ch.subId, ch.label);
+
+        // Cal pulses since start diagnostic sensor (live during COLLECTING)
+        snprintf(uid,  sizeof(uid),  "twwp_" NODE_ID "_cal_pulses_%s",         ch.suffix);
+        snprintf(name, sizeof(name), "%s Cal Pulses",                           ch.label);
+        snprintf(vk,   sizeof(vk),   "cal_pulses_since_start_%s",               ch.suffix);
+        pubDiagSensor(uid, name, vk, "pulses", ch.subId, ch.label);
     }
 
     // ── TDS calibration (zone 0 = Pre-RO, zone 1 = Post-RO) ─────────────────
@@ -2000,10 +2216,14 @@ static void publishOnlineState() {
     publishHaDiscoveryTdsMeter();
     publishHaDiscoveryWqConfig();
     publishHaDiscoveryCalibration();
+    publishHaDiscoveryTank();
     wqConfig_publishState();
     publishM0Status(true, false);
+    publishDiagStatus(true);
+    publishConfigStatus(true);
     sessionFlow_republishRecentSessions();
     lastHeartbeatMs = millis();
+    lastDiagMs = millis();
 }
 
 static void handleLeakTransition() {
@@ -2020,14 +2240,88 @@ static void handleLeakTransition() {
     publishM0Status(true, true);
 }
 
-static void handleHeartbeat() {
-    unsigned long now = millis();
-    if (now - lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) {
-        return;
+static void publishCalSession(const char* type, const char* channelOrZone,
+                              float oldVal, float newVal, float refVal,
+                              unsigned long beginMs) {
+    uint32_t ts = timeRtc_getUnixTime();
+    uint32_t durationS = (uint32_t)((millis() - beginMs) / 1000UL);
+
+    JsonDocument doc;
+    doc["ts"]              = ts;
+    doc["type"]            = type;
+    doc["channel_or_zone"] = channelOrZone;
+    doc["old_value"]       = serialized(String(oldVal, 4));
+    doc["new_value"]       = serialized(String(newVal, 4));
+    doc["ref_value"]       = serialized(String(refVal, 4));
+    doc["duration_s"]      = durationS;
+    char payload[256];
+    if (serializeJson(doc, payload, sizeof(payload)) > 0) {
+        netMqtt_publishSub(TOPIC_CAL_SESSION, payload);
     }
 
-    lastHeartbeatMs = now;
-    publishM0Status(true, false);
+    char row[160];
+    snprintf(row, sizeof(row), "%lu,%s,%s,%.4f,%.4f,%.4f,%lu",
+             (unsigned long)ts, type, channelOrZone,
+             oldVal, newVal, refVal, (unsigned long)durationS);
+    storeSd_appendCsvRow(SD_CAL_SESSION_LOG_PATH, row, CAL_SESSION_LOG_HEADER);
+
+    Serial.printf("[CAL] session: %s %s old=%.4f new=%.4f ref=%.4f dur=%lus\n",
+                  type, channelOrZone, oldVal, newVal, refVal, (unsigned long)durationS);
+}
+
+static void handleFastCalPublish() {
+    const char* s1 = sensorFlow_getCalState(1);
+    const char* s2 = sensorFlow_getCalState(2);
+    const char* s3 = sensorFlow_getCalState(3);
+    // Publish during collecting AND briefly after error states so HA sees the transition
+    bool ch1Active = strcmp(s1, "idle") != 0;
+    bool ch2Active = strcmp(s2, "idle") != 0;
+    bool ch3Active = strcmp(s3, "idle") != 0;
+    if (!ch1Active && !ch2Active && !ch3Active) return;
+
+    static unsigned long lastFastCalMs = 0;
+    unsigned long now = millis();
+    if (now - lastFastCalMs < CAL_FAST_PUBLISH_INTERVAL_MS) return;
+    lastFastCalMs = now;
+
+    JsonDocument doc;
+    if (ch1Active) {
+        doc["cal_state_1"]              = s1;
+        doc["cal_pulses_since_start_1"] = (uint32_t)sensorFlow_getCalPulsesSinceStart(1);
+        doc["flow_rate_1"]              = serialized(String(sensorFlow_getRateLpm(1), 3));
+        int secs = sensorFlow_getCalSecsUntilTimeout(1);
+        if (secs >= 0) doc["cal_secs_until_timeout_1"] = secs;
+    }
+    if (ch2Active) {
+        doc["cal_state_2"]              = s2;
+        doc["cal_pulses_since_start_2"] = (uint32_t)sensorFlow_getCalPulsesSinceStart(2);
+        doc["flow_rate_2"]              = serialized(String(sensorFlow_getRateLpm(2), 3));
+        int secs = sensorFlow_getCalSecsUntilTimeout(2);
+        if (secs >= 0) doc["cal_secs_until_timeout_2"] = secs;
+    }
+    if (ch3Active) {
+        doc["cal_state_3"]              = s3;
+        doc["cal_pulses_since_start_3"] = (uint32_t)sensorFlow_getCalPulsesSinceStart(3);
+        doc["flow_rate_3"]              = serialized(String(sensorFlow_getRateLpm(3), 3));
+        int secs = sensorFlow_getCalSecsUntilTimeout(3);
+        if (secs >= 0) doc["cal_secs_until_timeout_3"] = secs;
+    }
+    char payload[480];
+    if (serializeJson(doc, payload, sizeof(payload)) > 0) {
+        netMqtt_publish(TOPIC_STATUS_DIAG, payload, false);
+    }
+}
+
+static void handleHeartbeat() {
+    unsigned long now = millis();
+    if (now - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
+        lastHeartbeatMs = now;
+        publishM0Status(true, false);
+    }
+    if (now - lastDiagMs >= DIAG_INTERVAL_MS) {
+        lastDiagMs = now;
+        publishDiagStatus(true);
+    }
 }
 
 static void handleResetCredsButton() {
@@ -2063,6 +2357,9 @@ static void handleCmd(const char* payload) {
     if (!doc["set_k_factor_2"].isNull()) {
         sensorFlow_setKFactor(2, doc["set_k_factor_2"].as<float>());
     }
+    if (!doc["set_k_factor_3"].isNull()) {
+        sensorFlow_setKFactor(3, doc["set_k_factor_3"].as<float>());
+    }
     if (doc["restart_device"] | false) {
         storeSd_logEvent("[CMD] restart_device received — rebooting in 2s");
         Serial.println("[CMD] restart_device — rebooting in 2s");
@@ -2086,19 +2383,29 @@ static void handleCmd(const char* payload) {
     }
     if (doc["reset_flow_today_1"]  | false) sensorFlow_resetToday(1);
     if (doc["reset_flow_today_2"]  | false) sensorFlow_resetToday(2);
+    if (doc["reset_flow_today_3"]  | false) sensorFlow_resetToday(3);
     if (doc["reset_flow_today"]    | false) sensorFlow_resetToday(0);
     if (doc["reset_flow_week_1"]   | false) sensorFlow_resetWeek(1);
     if (doc["reset_flow_week_2"]   | false) sensorFlow_resetWeek(2);
+    if (doc["reset_flow_week_3"]   | false) sensorFlow_resetWeek(3);
     if (doc["reset_flow_week"]     | false) sensorFlow_resetWeek(0);
     if (doc["reset_flow_month_1"]  | false) sensorFlow_resetMonth(1);
     if (doc["reset_flow_month_2"]  | false) sensorFlow_resetMonth(2);
+    if (doc["reset_flow_month_3"]  | false) sensorFlow_resetMonth(3);
     if (doc["reset_flow_month"]    | false) sensorFlow_resetMonth(0);
     if (doc["reset_flow_year_1"]   | false) sensorFlow_resetYear(1);
     if (doc["reset_flow_year_2"]   | false) sensorFlow_resetYear(2);
+    if (doc["reset_flow_year_3"]   | false) sensorFlow_resetYear(3);
     if (doc["reset_flow_year"]     | false) sensorFlow_resetYear(0);
     if (doc["reset_flow_totals_1"] | false) sensorFlow_resetTotals(1);
     if (doc["reset_flow_totals_2"] | false) sensorFlow_resetTotals(2);
+    if (doc["reset_flow_totals_3"] | false) sensorFlow_resetTotals(3);
     if (doc["reset_flow_totals"]   | false) sensorFlow_resetTotals(0);
+    // Tank commands
+    if (doc["tank_reset_empty"]    | false) tankMonitor_resetEmpty();
+    if (!doc["set_tank_capacity_l"].isNull()) {
+        tankMonitor_setCapacityL(doc["set_tank_capacity_l"].as<float>());
+    }
     if (doc["factory_reset_flow"]  | false) {
         sensorFlow_factoryReset();
         sessionFlow_factoryReset();
@@ -2120,11 +2427,17 @@ static void handleCmd(const char* payload) {
     if (!doc["set_k_table_2"].isNull()) {
         sensorFlow_setKTable(2, doc["set_k_table_2"].as<const char*>());
     }
+    if (!doc["set_k_table_3"].isNull()) {
+        sensorFlow_setKTable(3, doc["set_k_table_3"].as<const char*>());
+    }
     if (!doc["set_debounce_us_1"].isNull()) {
         sensorFlow_setDebounceUs(1, (uint32_t)constrain(doc["set_debounce_us_1"].as<int>(), 100, 10000));
     }
     if (!doc["set_debounce_us_2"].isNull()) {
         sensorFlow_setDebounceUs(2, (uint32_t)constrain(doc["set_debounce_us_2"].as<int>(), 100, 10000));
+    }
+    if (!doc["set_debounce_us_3"].isNull()) {
+        sensorFlow_setDebounceUs(3, (uint32_t)constrain(doc["set_debounce_us_3"].as<int>(), 100, 10000));
     }
     if (!doc["set_flow_avg_window"].isNull()) {
         sensorFlow_setFlowAvgWindow((uint8_t)constrain(doc["set_flow_avg_window"].as<int>(), 1, 20));
@@ -2134,6 +2447,9 @@ static void handleCmd(const char* payload) {
     }
     if (!doc["set_sensor_model_2"].isNull()) {
         sensorFlow_setModel(2, doc["set_sensor_model_2"].as<const char*>());
+    }
+    if (!doc["set_sensor_model_3"].isNull()) {
+        sensorFlow_setModel(3, doc["set_sensor_model_3"].as<const char*>());
     }
     if (!doc["set_v_min"].isNull()) {
         sensorVoltage_setVMin(doc["set_v_min"].as<float>());
@@ -2150,6 +2466,43 @@ static void handleCmd(const char* payload) {
         if (!netOta_beginUpdate(url, md5)) {
             Serial.print("[OTA] failed to start update: ");
             Serial.println(netOta_getError() ? netOta_getError() : "unknown");
+        }
+    }
+    if (!doc["sd_write_file"].isNull() && !doc["sd_write_data"].isNull()) {
+        const char* path = doc["sd_write_file"].as<const char*>();
+        const char* data = doc["sd_write_data"].as<const char*>();
+        if (path && path[0] != '\0' && data) {
+            bool ok = storeSd_writeTextFile(path, data);
+            char logMsg[160];
+            snprintf(logMsg, sizeof(logMsg), "[SD] sd_write_file %s: %s", path, ok ? "ok" : "failed");
+            Serial.println(logMsg);
+            storeSd_logEvent(logMsg);
+            netMqtt_publish(TOPIC_LOG, logMsg, false);
+        }
+    }
+    if (!doc["sd_read_file"].isNull()) {
+        const char* path = doc["sd_read_file"].as<const char*>();
+        if (path && path[0] != '\0') {
+            String contents;
+            char logMsg[192];
+            if (storeSd_readTextFile(path, contents)) {
+                snprintf(logMsg, sizeof(logMsg), "[SD] sd_read_file %s: %s", path, contents.c_str());
+            } else {
+                snprintf(logMsg, sizeof(logMsg), "[SD] sd_read_file %s: not found or read error", path);
+            }
+            Serial.println(logMsg);
+            netMqtt_publish(TOPIC_LOG, logMsg, false);
+        }
+    }
+    if (!doc["sd_delete_file"].isNull()) {
+        const char* path = doc["sd_delete_file"].as<const char*>();
+        if (path && path[0] != '\0') {
+            bool ok = storeSd_deleteFile(path);
+            char logMsg[128];
+            snprintf(logMsg, sizeof(logMsg), "[SD] sd_delete_file %s: %s", path, ok ? "ok" : "failed or not found");
+            Serial.println(logMsg);
+            storeSd_logEvent(logMsg);
+            netMqtt_publish(TOPIC_LOG, logMsg, false);
         }
     }
     {
@@ -2202,33 +2555,72 @@ static void handleCmd(const char* payload) {
     }
 
     // Flow calibration
-    if (!doc["flow_cal_begin"].isNull())  sensorFlow_calBegin(doc["flow_cal_begin"].as<int>());
+    if (!doc["flow_cal_begin"].isNull()) {
+        uint8_t ch = (uint8_t)doc["flow_cal_begin"].as<int>();
+        sensorFlow_calBegin(ch);
+        if (ch >= 1 && ch <= 3) s_flowCalBeginMs[ch] = millis();
+    }
     if (!doc["flow_cal_commit"].isNull()) sensorFlow_calCommit(doc["flow_cal_commit"].as<int>());
-    if (!doc["flow_cal_accept"].isNull()) sensorFlow_calAccept(doc["flow_cal_accept"].as<int>());
+    if (!doc["flow_cal_accept"].isNull()) {
+        uint8_t ch = (uint8_t)doc["flow_cal_accept"].as<int>();
+        float oldK  = sensorFlow_getKFactor(ch);
+        if (sensorFlow_calAccept(ch)) {
+            char zone[8];
+            snprintf(zone, sizeof(zone), "ch%d", ch);
+            publishCalSession("flow_cal", zone,
+                              oldK,
+                              sensorFlow_getKFactor(ch),
+                              sensorFlow_getCalRefVol(ch),
+                              (ch >= 1 && ch <= 3) ? s_flowCalBeginMs[ch] : millis());
+        }
+    }
     if (!doc["flow_cal_abort"].isNull())  sensorFlow_calAbort(doc["flow_cal_abort"].as<int>());
     if (!doc["set_cal_ref_vol_1"].isNull()) sensorFlow_setCalRefVol(1, doc["set_cal_ref_vol_1"].as<float>());
     if (!doc["set_cal_ref_vol_2"].isNull()) sensorFlow_setCalRefVol(2, doc["set_cal_ref_vol_2"].as<float>());
+    if (!doc["set_cal_ref_vol_3"].isNull()) sensorFlow_setCalRefVol(3, doc["set_cal_ref_vol_3"].as<float>());
 
     // TDS calibration
     if (!doc["set_tds_cal_ref_ec_0"].isNull()) sensorTdsMeter_setCalRefEc(0, doc["set_tds_cal_ref_ec_0"].as<float>());
     if (!doc["set_tds_cal_ref_ec_1"].isNull()) sensorTdsMeter_setCalRefEc(1, doc["set_tds_cal_ref_ec_1"].as<float>());
-    if (!doc["tds_cal_begin"].isNull())  sensorTdsMeter_calBegin((uint8_t)doc["tds_cal_begin"].as<int>());
+    if (!doc["tds_cal_begin"].isNull()) {
+        uint8_t z = (uint8_t)doc["tds_cal_begin"].as<int>();
+        sensorTdsMeter_calBegin(z);
+        if (z < 2) s_tdsCalBeginMs[z] = millis();
+    }
     if (!doc["tds_cal_commit"].isNull()) {
         uint8_t z = (uint8_t)doc["tds_cal_commit"].as<int>();
         sensorTdsMeter_calCommit(z, sensorTdsMeter_getCalRefEc(z));
     }
-    if (!doc["tds_cal_accept"].isNull()) sensorTdsMeter_calAccept((uint8_t)doc["tds_cal_accept"].as<int>());
+    if (!doc["tds_cal_accept"].isNull()) {
+        uint8_t z = (uint8_t)doc["tds_cal_accept"].as<int>();
+        float oldFactor = sensorTdsMeter_getEcCalFactor(z);
+        if (sensorTdsMeter_calAccept(z)) {
+            const char* zoneName = (z == 0) ? "pre_ro" : "post_ro";
+            publishCalSession("tds_cal", zoneName,
+                              oldFactor,
+                              sensorTdsMeter_getEcCalFactor(z),
+                              sensorTdsMeter_getCalRefEc(z),
+                              (z < 2) ? s_tdsCalBeginMs[z] : millis());
+        }
+    }
     if (!doc["tds_cal_abort"].isNull())  sensorTdsMeter_calAbort((uint8_t)doc["tds_cal_abort"].as<int>());
     if (!doc["set_tds_pre_ro_ec_cal_factor"].isNull())  sensorTdsMeter_setEcCalFactor(0, doc["set_tds_pre_ro_ec_cal_factor"].as<float>());
     if (!doc["set_tds_post_ro_ec_cal_factor"].isNull()) sensorTdsMeter_setEcCalFactor(1, doc["set_tds_post_ro_ec_cal_factor"].as<float>());
     if (!doc["set_tds_pre_ro_cal_date"].isNull())  sensorTdsMeter_setCalDate(0, doc["set_tds_pre_ro_cal_date"].as<const char*>());
     if (!doc["set_tds_post_ro_cal_date"].isNull()) sensorTdsMeter_setCalDate(1, doc["set_tds_post_ro_cal_date"].as<const char*>());
+
+    publishConfigStatus(true);
+    publishDiagStatus(true);
+    publishM0Status(true, false);
 }
 
 static const char* DATA_LOG_HEADER =
     "ts,"
     "flow_rate_1,flow_total_1,flow_today_1,"
     "flow_rate_2,flow_total_2,flow_today_2,"
+    "flow_rate_3,flow_total_3,flow_today_3,"
+    "grey_waste_lpm,grey_waste_today,ro_efficiency,"
+    "tank_level_l,tank_level_pct,"
     "leak,"
     "supply_voltage,"
     "wq_pre_ro_ph,wq_pre_ro_orp,wq_pre_ro_ec,wq_pre_ro_temp,"
@@ -2253,11 +2645,17 @@ static void handleDataLog() {
     bool tdsP0 = sensorTdsMeter_isOnline(TDS_ZONE_PRE_RO);
     bool tdsP1 = sensorTdsMeter_isOnline(TDS_ZONE_POST_RO);
 
-    char row[480];
+    float csvR2 = sensorFlow_getRateLpm(2), csvR3 = sensorFlow_getRateLpm(3);
+    float csvT2 = sensorFlow_getTodayL(2),  csvT3 = sensorFlow_getTodayL(3);
+
+    char row[600];
     snprintf(row, sizeof(row),
         "%lu,"
         "%.3f,%.3f,%.3f,"
         "%.3f,%.3f,%.3f,"
+        "%.3f,%.3f,%.3f,"
+        "%.3f,%.3f,%.1f,"
+        "%.2f,%.1f,"
         "%d,"
         "%.3f,"
         "%s,%s,%s,%s,"
@@ -2267,7 +2665,12 @@ static void handleDataLog() {
         "%s,%s,%s",
         (unsigned long)timeRtc_getUnixTime(),
         sensorFlow_getRateLpm(1), sensorFlow_getTotalL(1), sensorFlow_getTodayL(1),
-        sensorFlow_getRateLpm(2), sensorFlow_getTotalL(2), sensorFlow_getTodayL(2),
+        csvR2, sensorFlow_getTotalL(2), csvT2,
+        csvR3, sensorFlow_getTotalL(3), csvT3,
+        (csvR2 > csvR3) ? (csvR2 - csvR3) : 0.0f,
+        (csvT2 > csvT3) ? (csvT2 - csvT3) : 0.0f,
+        (csvR2 > 0.05f) ? (csvR3 / csvR2 * 100.0f) : 0.0f,
+        tankMonitor_getLevelL(), tankMonitor_getLevelPct(),
         sensorLeak_isWet() ? 1 : 0,
         sensorVoltage_getVoltageV(),
         csvFloatOrBlank(prePh, sizeof(prePh), sensorYieryi_hasPh(YIERYI_ZONE_PRE_RO), sensorYieryi_getPh(YIERYI_ZONE_PRE_RO), 2),
@@ -2300,6 +2703,8 @@ static void updateM0Led() {
     }
 }
 
+SET_LOOP_TASK_STACK_SIZE(16384);
+
 void setup() {
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0);  // don't block on TX if no USB host connected
@@ -2319,6 +2724,7 @@ void setup() {
 
     sensorLeak_begin();
     sensorFlow_begin();
+    tankMonitor_begin();
     sessionFlow_begin();
     sensorVoltage_begin();
     rs485Mux_begin();
@@ -2352,6 +2758,8 @@ void loop() {
 
     sensorLeak_loop();
     sensorFlow_loop();
+    tankMonitor_feedFlow(sensorFlow_getRateLpm(2), sensorFlow_getRateLpm(1));
+    tankMonitor_loop();
     sessionFlow_loop();
     sensorVoltage_loop();
     rs485Mux_loop();
@@ -2372,6 +2780,7 @@ void loop() {
     }
 
     handleLeakTransition();
+    handleFastCalPublish();
     handleHeartbeat();
     handleDataLog();
     handleResetCredsButton();

@@ -140,12 +140,16 @@ static const char* FALLBACK_HTML = R"HTML(
       if (!state.stats) return;
       const wanted = Math.min(parseInt($('batch').value, 10), state.stats.count || 0, 500);
       setStatus(`Downloading ${wanted} messages from node...`);
-      const res = await fetch('/api/buffer/fetch?count=' + wanted);
-      state.messages = await res.json();
-      uploadBtn.disabled = state.messages.length === 0;
-      ackBtn.disabled = true;
-      state.uploaded = false;
-      setStatus(`Downloaded ${state.messages.length} messages. Keep this page open and tap Upload when internet is available.`);
+      try {
+        const res = await fetch('/api/buffer/fetch?count=' + wanted);
+        state.messages = await res.json();
+        uploadBtn.disabled = state.messages.length === 0;
+        ackBtn.disabled = true;
+        state.uploaded = false;
+        setStatus(`Downloaded ${state.messages.length} messages.\n\nNow disconnect from the node WiFi (${state.stats.ap_ssid}) in your phone Settings, then tap Upload to TWWP.`);
+      } catch (err) {
+        setStatus('Download failed: ' + err.message);
+      }
     });
     uploadBtn.addEventListener('click', async () => {
       if (!state.stats || !state.messages.length) return;
@@ -158,20 +162,35 @@ static const char* FALLBACK_HTML = R"HTML(
         const email = $('email').value.trim();
         if (email) body.uploader_email = email;
       }
-      setStatus('Uploading messages to TWWP relay...');
-      const res = await fetch(state.stats.upload_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (!res.ok) {
-        throw new Error('Relay upload failed with HTTP ' + res.status);
+      setStatus('Uploading to TWWP relay... (make sure you are on mobile data, not node WiFi)');
+      uploadBtn.disabled = true;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30000);
+        const res = await fetch(state.stats.upload_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          throw new Error(`Relay returned HTTP ${res.status}: ${errText}`);
+        }
+        const payload = await res.json();
+        state.uploaded = true;
+        ackBtn.disabled = false;
+        setStatus(`Relay accepted ${payload.published || state.messages.length} messages.\n\nReconnect to node WiFi (${state.stats.ap_ssid}) then tap Clear uploaded buffer.`);
+        if (!memberFlow) signupBlock.classList.remove('hidden');
+      } catch (err) {
+        uploadBtn.disabled = false;
+        if (err.name === 'AbortError') {
+          setStatus('Upload timed out. Make sure you are on mobile data (not node WiFi) and try again.');
+        } else {
+          setStatus('Upload failed: ' + err.message + '\n\nMake sure you are on mobile data, not node WiFi.');
+        }
       }
-      const payload = await res.json();
-      state.uploaded = true;
-      ackBtn.disabled = false;
-      setStatus(`Relay accepted ${payload.published || state.messages.length} messages. Tap Clear uploaded buffer while this page can still reach the node.`);
-      if (!memberFlow) signupBlock.classList.remove('hidden');
     });
     ackBtn.addEventListener('click', async () => {
       if (!state.uploaded || !state.messages.length) return;
@@ -342,6 +361,33 @@ static void handleDebugState() {
     s_server.send(200, "application/json", payload);
 }
 
+static void handleConfigWrite() {
+    JsonDocument req;
+    if (deserializeJson(req, s_server.arg("plain"))) {
+        s_server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+
+    const char* path = req["path"] | "";
+    const char* data = req["data"] | "";
+    if (path[0] == '\0' || data[0] == '\0') {
+        s_server.send(400, "application/json", "{\"error\":\"path and data required\"}");
+        return;
+    }
+
+    bool ok = storeSd_writeTextFile(path, data);
+    char logMsg[160];
+    snprintf(logMsg, sizeof(logMsg), "[AP] config_write %s: %s", path, ok ? "ok" : "failed");
+    Serial.println(logMsg);
+    storeSd_logEvent(logMsg);
+
+    if (ok) {
+        s_server.send(200, "application/json", "{\"ok\":true}");
+    } else {
+        s_server.send(500, "application/json", "{\"error\":\"write failed\"}");
+    }
+}
+
 static void handleNotFound() {
     s_server.send(404, "application/json", "{\"error\":\"not found\"}");
 }
@@ -353,6 +399,7 @@ static void beginServer() {
         s_server.on("/api/buffer/fetch", HTTP_GET, handleBufferFetch);
         s_server.on("/api/buffer/ack", HTTP_POST, handleBufferAck);
         s_server.on("/api/debug/state", HTTP_GET, handleDebugState);
+        s_server.on("/api/config/write", HTTP_POST, handleConfigWrite);
         s_server.onNotFound(handleNotFound);
         s_routesReady = true;
     }

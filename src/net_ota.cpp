@@ -63,8 +63,32 @@ static void setState(OtaState state) {
     otaState = state;
 }
 
+static void publishOtaState() {
+    if (!netMqtt_isConnected()) {
+        return;
+    }
+
+    JsonDocument doc;
+    doc["ota_state"] = static_cast<uint8_t>(otaState);
+    doc["progress_pct"] = otaProgressPct;
+    doc["awaiting_validation"] = otaAwaitingValidation;
+    doc["rolled_back"] = otaRollbackTriggered;
+    if (otaUrl[0]) {
+        doc["url"] = otaUrl;
+    }
+    if (otaError[0]) {
+        doc["error"] = otaError;
+    }
+
+    char payload[512];
+    if (serializeJson(doc, payload, sizeof(payload)) > 0) {
+        netMqtt_publish(TOPIC_OTA_STATE, payload, true);
+    }
+}
+
 static void clearError() {
     otaError[0] = '\0';
+    publishOtaState();
 }
 
 static void setError(const char* fmt, ...) {
@@ -74,10 +98,12 @@ static void setError(const char* fmt, ...) {
     va_end(args);
     otaError[sizeof(otaError) - 1] = '\0';
     setState(OtaState::FAILED);
+    publishOtaState();
 }
 
 static void clearUrl() {
     otaUrl[0] = '\0';
+    publishOtaState();
 }
 
 static bool prefsBegin(Preferences& prefs, bool readOnly) {
@@ -148,6 +174,7 @@ static bool markRunningAppValid() {
     if (!runningPartitionPendingVerify()) {
         clearBootFlags();
         otaAwaitingValidation = false;
+        publishOtaState();
         return true;
     }
 
@@ -161,6 +188,7 @@ static bool markRunningAppValid() {
     clearBootFlags();
     otaAwaitingValidation = false;
     storeSd_logEvent("[OTA] new firmware marked valid");
+    publishOtaState();
     return true;
 }
 
@@ -543,6 +571,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
 
     client->stop();
     setState(OtaState::VERIFYING);
+    publishOtaState();
 
     if (md5Started) {
         uint8_t digest[16] = {0};
@@ -563,6 +592,7 @@ static bool downloadAndStageFirmware(const char* url, const char* md5Expected) {
     }
 
     setState(OtaState::APPLYING);
+    publishOtaState();
     if (!Update.end()) {
         setError("Update.end failed (%u)", (unsigned)Update.getError());
         return false;
@@ -587,6 +617,7 @@ bool netOta_begin() {
     clearUrl();
     otaExpectedMd5[0] = '\0';
     setState(OtaState::IDLE);
+    publishOtaState();
 
     uint8_t pending = readBootPendingFlag();
     if (pending == OTA_BOOT_ROLLED_BACK) {
@@ -613,6 +644,7 @@ bool netOta_begin() {
         otaAwaitingValidation = true;
         otaValidationStartMs = millis();
         storeSd_logEvent("[OTA] validation window started for new firmware");
+        publishOtaState();
     } else {
         clearBootFlags();
     }
@@ -624,6 +656,7 @@ bool netOta_begin() {
         otaProgressPct = 0;
         setState(OtaState::DOWNLOADING);
         storeSd_logEvent("[OTA] ArduinoOTA upload started");
+        publishOtaState();
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
         if (total == 0U) {
@@ -631,17 +664,20 @@ bool netOta_begin() {
             return;
         }
         otaProgressPct = static_cast<uint8_t>((progress * 100U) / total);
+        publishOtaState();
     });
     ArduinoOTA.onEnd([]() {
         otaProgressPct = 100;
         setState(OtaState::SUCCESS);
         storeSd_logEvent("[OTA] ArduinoOTA upload complete");
+        publishOtaState();
     });
     ArduinoOTA.onError([](ota_error_t error) {
         setState(OtaState::IDLE);
         char logMsg[96];
         snprintf(logMsg, sizeof(logMsg), "[OTA] ArduinoOTA failed: %u", (unsigned)error);
         storeSd_logEvent(logMsg);
+        publishOtaState();
     });
     ArduinoOTA.begin();
     storeSd_logEvent("[OTA] ArduinoOTA ready");
@@ -710,6 +746,7 @@ bool netOta_beginUpdate(const char* url, const char* md5Expected) {
     clearError();
     setState(OtaState::DOWNLOADING);
     storeSd_logEvent("[OTA] HTTPS OTA download started");
+    publishOtaState();
 
     if (!downloadAndStageFirmware(otaUrl, otaExpectedMd5[0] ? otaExpectedMd5 : nullptr)) {
         char logMsg[220];
@@ -729,14 +766,7 @@ bool netOta_beginUpdate(const char* url, const char* md5Expected) {
     otaProgressPct = 100;
     setState(OtaState::SUCCESS);
     storeSd_logEvent("[OTA] update applied successfully, rebooting");
-
-    // Best-effort: publish SUCCESS before reboot so MQTT subscribers see it
-    if (netMqtt_isConnected()) {
-        char stateMsg[48];
-        snprintf(stateMsg, sizeof(stateMsg), "{\"ota_state\":%u,\"progress_pct\":100}",
-                 (unsigned)OtaState::SUCCESS);
-        netMqtt_publish(TOPIC_OTA_STATE, stateMsg, false);
-    }
+    publishOtaState();
 
     ESP.restart();
     return true;
@@ -772,4 +802,8 @@ void netOta_rollback() {
 
 bool netOta_isRollbackPending() {
     return otaRollbackTriggered;
+}
+
+bool netOta_isAwaitingValidation() {
+    return otaAwaitingValidation;
 }

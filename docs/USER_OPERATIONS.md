@@ -57,6 +57,36 @@ If you see `[VOLTAGE] ADS1115 not found` instead, check that the ADS1115 is wire
 
 If you see `[OLED] SSD1306 not found at 0x3C` instead of `[OLED] ready`, check that the display VCC/GND are wired to the internal header 3V3/GND pins, and that SDA/SCL are on GPIO9/GPIO3.
 
+## Field Deployment Quickstart
+
+Use this checklist when handing a node to a field technician.
+
+1. Confirm wiring matches the canonical flow map:
+   - Ch1 / GPIO4 = tap output (`DWS-MH-02`)
+   - Ch2 / GPIO5 = RO output into tank/system (`USN-HS06PE`)
+   - Ch3 / GPIO7 = raw RO input / grey-water reference (`USN-HS06PS`)
+2. Boot the node and confirm WiFi provisioning succeeds.
+3. Confirm MQTT is online and Home Assistant sees the node as available.
+4. Confirm the three retained status topics exist:
+   - `twwp/<id>/status` = live operational heartbeat
+   - `twwp/<id>/status_diag` = slower diagnostics
+   - `twwp/<id>/status_cfg` = config / calibration mirrors
+5. Confirm tank behavior directionally:
+   - Ch2 flow raises tank level
+   - Ch1 flow lowers tank level
+6. Confirm remote reboot works before leaving site:
+   - send `{"restart_device":true}` to `twwp/<id>/cmd`
+   - verify node goes offline briefly, then reconnects
+7. Confirm remote OTA works before leaving site if a staged firmware is available.
+
+### On-site acceptance signs
+
+- `status` shows `wifi_status="Connected"` and `mqtt_buffer_count=0`
+- `status_cfg` shows the expected sensor models and K factors
+- `status_diag` shows the node IP and raw pulse counters
+- Home Assistant entity labels match the canonical flow map
+- No persistent `ota_error` is present after boot
+
 ## OLED Status Display
 
 The node drives a 0.96" SSD1306 128×64 I²C OLED mounted on the enclosure. It shows a 6-frame sliding carousel cycling every 5 seconds, with a persistent header overlay at the top.
@@ -497,12 +527,12 @@ Daily CSV logging: /log/YYYY-MM-DD.csv
 Local AP upload portal: 192.168.4.1 with buffer stats/fetch/ack APIs
 HTTPS relay service: https://twwp-iot.duckdns.org/api/v1/node-upload (live)
 CRM lead capture: upload_leads.csv on VPS
+Tap-Map v2 "Sync offline data" button (M-Upload.5 — done in v2 rebuild frontend)
 ```
 
 Not implemented yet:
 
 ```text
-Tap-Map App "Sync offline data" button (M-Upload.5 — in progress)
 QR code label for AP WiFi (M-Upload.4)
 Cloud folder upload
 Date-range upload
@@ -771,43 +801,65 @@ On boot the node loads SD first (has subtotals and date), then overlays the NVS 
 
 Flow calibration is loaded from [`/config/node.json`](docs/USER_OPERATIONS.md:309) at boot. Phase 2 adds multi-point K tables plus a 5-sample moving-average flow window before K lookup. Change the file on the SD card — no reflash needed.
 
-Current defaults:
+### Canonical flow channel map
 
-| Sensor model | Channel | Default nominal K |
-|---|---|---|
-| USN-HS06PE (RO Output) | 1 / GPIO4 | 5500 pulses/L |
-| USN-HS06PS (RO Input) | 2 / GPIO5 | 20700 pulses/L |
+| Channel | GPIO | Sensor model | Role | Default nominal K |
+|---|---|---|---|---|
+| Ch1 | GPIO4 | DWS-MH-02 | Tap output — user consumption | 916 pulses/L |
+| Ch2 | GPIO5 | USN-HS06PE | RO output → storage tanks | 5500 pulses/L |
+| Ch3 | GPIO7 | USN-HS06PS | RO input / grey-water reference | 20700 pulses/L |
 
-Minimal backward-compatible config:
+All three sensors: 5 V VCC, GND, signal line pulled up via `INPUT_PULLUP`, interrupt on FALLING edge.
+
+> **K-value note:** The DWS-MH-02 (Ch1) field K (874–939 pulses/L across 0.9–1.5 LPM) is 12–22% higher than the sensor formula (F=15Q−2 → K≈780–860). Always use field-measured K-table values for Ch1, not formula estimates.
+
+Current defaults (field-calibrated):
 
 ```json
 {
   "flow": {
-    "k_factor_1": 5500,
-    "k_factor_2": 20700
+    "k_factor_1": 916,
+    "k_factor_2": 5500,
+    "k_factor_3": 20700,
+    "sensor_model_1": "DWS-MH-02",
+    "sensor_model_2": "USN-HS06PE",
+    "sensor_model_3": "USN-HS06PS"
   }
 }
 ```
 
-If [`k_table_1`](docs/USER_OPERATIONS.md:329) or [`k_table_2`](docs/USER_OPERATIONS.md:334) is missing, the firmware automatically treats the matching single [`k_factor_*`](docs/USER_OPERATIONS.md:320) value as a 1-point calibration table.
+If a `k_table_*` array is absent the firmware uses the matching `k_factor_*` value as a 1-point table (backward compatible with older `node.json` files).
 
-Multi-point config example:
+Multi-point config example (field-measured K-tables):
 
 ```json
 {
   "flow": {
-    "k_factor_1": 5500,
-    "k_factor_2": 20700,
+    "k_factor_1": 916,
+    "k_factor_2": 5500,
+    "k_factor_3": 20700,
     "k_table_1": [
+      {"flow_lpm": 0.91, "k": 874},
+      {"flow_lpm": 1.23, "k": 916},
+      {"flow_lpm": 1.46, "k": 939}
+    ],
+    "k_table_2": [
       {"flow_lpm": 0.42, "k": 4972},
       {"flow_lpm": 0.99, "k": 5468},
       {"flow_lpm": 1.42, "k": 5476}
     ],
-    "k_table_2": [
+    "k_table_3": [
       {"flow_lpm": 0.42, "k": 21120},
       {"flow_lpm": 0.99, "k": 20818},
       {"flow_lpm": 1.38, "k": 21104}
-    ]
+    ],
+    "sensor_model_1": "DWS-MH-02",
+    "sensor_model_2": "USN-HS06PE",
+    "sensor_model_3": "USN-HS06PS",
+    "debounce_us_1": 1000,
+    "debounce_us_2": 1000,
+    "debounce_us_3": 500,
+    "flow_avg_window": 5
   }
 }
 ```
@@ -816,10 +868,12 @@ Rules:
 
 | Field | Meaning |
 |---|---|
-| `k_factor_1` / `k_factor_2` | Nominal fallback K for each channel, still published in heartbeat and HA. |
-| `k_table_1` / `k_table_2` | Optional ordered calibration arrays, lowest flow first. |
+| `k_factor_1/2/3` | Nominal fallback K for each channel, published in heartbeat and HA. |
+| `k_table_1/2/3` | Optional ordered calibration arrays, lowest flow first. Overrides `k_factor_*` when present. |
 | `flow_lpm` | Calibration flow point in L/min. |
 | `k` | K factor at that flow point in pulses/L. |
+| `debounce_us_1/2/3` | ISR debounce window per channel in µs (range 100–10000). |
+| `flow_avg_window` | Moving-average sample window shared across all channels (range 1–20, default 5). |
 
 The firmware clamps below the first point and above the last point, and linearly interpolates between points. Lifetime total volume now comes from raw total pulses divided by the interpolated K based on the smoothed flow rate. Today/week/month/year subtotals also use the interpolated K for each one-second interval.
 
@@ -1372,14 +1426,69 @@ mosquitto_pub ... -m '{"flow_cal_accept": 1}'
 
 Replace `1` with `2` for channel 2.
 
-**Status fields published after cal start:**
+**Safety behaviour (important for live units):**
+
+| Situation | What happens |
+|---|---|
+| No flow detected for 90 seconds | Node **auto-aborts** the cal session. `cal_state` changes to `timed_out` for 5 seconds, then back to `idle`. OLED shows `!! NO FLOW !!`. Old K factor is unchanged. |
+| COMMIT pressed with fewer than 100 pulses | COMMIT is **rejected**. State stays `collecting`. `cal_state` shows `too_few_pulses` for 5 seconds. Let more water through, then commit again. |
+| ABORT pressed at any point | Immediately resets to `idle`. Old K factor unchanged. |
+| Node reboots mid-calibration | Cal state is RAM-only — resets to `idle` on every boot. Old K factor is safe. |
+| Tap closed, flow stops before COMMIT | State stays `collecting`. Re-open tap, fill container, then COMMIT. Or press ABORT. |
+
+**OLED countdown:** When in `collecting` state with no pulses detected and less than 30 seconds before auto-abort, the OLED displays `Abort in Xs` so the person at the tap can act.
+
+**Status fields published every 2 seconds during collecting:**
 
 | Field | Description |
 |---|---|
-| `cal_state_1` / `cal_state_2` | `idle` / `collecting` / `done` |
+| `cal_state_1` / `cal_state_2` | `idle` / `collecting` / `done` / `timed_out` / `too_few_pulses` |
 | `cal_ref_vol_1` / `cal_ref_vol_2` | Reference volume set (L) |
 | `cal_pulses_since_start_1` / `_2` | Raw pulses counted since cal start |
 | `cal_suggested_k_1` / `_2` | Computed K (pulses/L) — only meaningful when `done` |
+| `cal_secs_until_timeout_1` / `_2` | Seconds until auto-abort fires (only present when at risk) |
+
+**Recording calibration runs in the Excel workbook:**
+
+All field calibration runs should be recorded in:
+
+```
+/home/kenny/Documents/Waveshare build TWWP/reference/miscellaneous/flow_sensor_calibration_v106.xlsx
+```
+
+| Sheet | What to fill in |
+|---|---|
+| **5L Baseline** | One row per flow band (Low/Medium/High/Very High) per sensor. Enter: D=K_suggested, E=duration (min), G=ref vol (L), M=notes. Formulae compute pulse count, flow rate, error, and band classification automatically. |
+| **4L Calibration** | Same structure but for 4 L reference runs. |
+| **CalibrationLog** | One row per run (append). Columns: date, node_id, type, channel, old_K, new_K, ref_vol, duration_s, accepted_by, notes. |
+
+**DWS-MH-02 field data already entered (2026-05-18 runs):**
+
+| Run | Flow rate | Duration | Pulses | K_suggested | Band |
+|---|---|---|---|---|---|
+| Run 1 | ~1.46 LPM | 206 s | 4697 | 939.4 | High |
+| Run 2 | ~0.91 LPM | 330 s | 4372 | 874.4 | Medium |
+| Run 3 | ~1.23 LPM | 244 s | 4581 | 916.2 | High |
+
+All 3 runs used 5.0 L reference volume. K values are 12–22% higher than the sensor's formula (F=15Q−2) — use field data, not the formula.
+
+**Querying historical calibration data from InfluxDB:**
+
+InfluxDB (db = `twwp_ha`) stores all HA entity history including cal_state, suggested_K, and pulse counts. Access via Grafana container on the Docker network:
+
+```bash
+TOKEN=$(grep INFLUXDB_TOKEN /home/kenny/projects/twwp-monitoring/.env | cut -d= -f2)
+ssh -i ~/.ssh/hetzner_ed25519 kenny@91.98.133.15 \
+  "docker exec twwp-grafana curl -s 'http://influxdb:8181/api/v3/query_sql' \
+   -H 'Authorization: Bearer $TOKEN' \
+   -H 'Content-Type: application/json' \
+   -d '{\"db\":\"twwp_ha\",\"q\":\"SELECT time, state FROM \\\"sensor.output_flow_output_cal_state\\\" WHERE time >= timestamp '\''2026-05-18T00:00:00Z'\'' ORDER BY time\",\"format\":\"jsonl\"}'"
+```
+
+Relevant tables:
+- `sensor.output_flow_output_cal_state` — cal state machine history for ch1
+- `pulses` — `output_flow_output_cal_pulses` entity (peak value per run = total pulses counted)
+- `pulses/L` — `output_output_cal_suggested_k` (suggested K at DONE) and `ro_output_output_applied_k`
 
 ---
 
@@ -1720,3 +1829,55 @@ it is a harmless pre-fix artifact and can be deleted with:
 ```text
 sdrm /log/2000-00-00.csv
 ```
+
+---
+
+## GPIO Header Pin Reference
+
+The Waveshare ESP32-S3-RS485-CAN board has a 2×12 internal header (accessible with enclosure open) and two SH1.0 side sockets (always accessible without opening the enclosure).
+
+### 2×12 internal header — full allocation
+
+| GPIO | Direction | What it connects to | Notes |
+|---|---|---|---|
+| GPIO3 | I²C SCL (open-drain) | DS3231 RTC, SSD1306 OLED, ADS1115 — shared Wire bus | Strapping pin; safe as driven I²C clock. 4.7 kΩ pull-up on DS3231 module. |
+| GPIO4 | INPUT PULLUP | **Ch1 flow sensor — DWS-MH-02** (tap output, user consumption) | 5 V sensor; signal is 3.3 V safe. ISR FALLING edge. |
+| GPIO5 | INPUT PULLUP | **Ch2 flow sensor — USN-HS06PE** (RO output → storage tanks) | 5 V sensor; signal is 3.3 V safe. ISR FALLING edge. |
+| GPIO6 | INPUT PULLUP | MH-RD leak / raindrop sensor — comparator DO output | LOW = wet. 3.3 V logic. Adjust trimmer until LED lights reliably when wet. |
+| GPIO7 | INPUT PULLUP | **Ch3 flow sensor — USN-HS06PS** (RO input / grey-water reference) | 5 V sensor; signal is 3.3 V safe. ISR FALLING edge. |
+| GPIO8 | OUTPUT | Relay module IN1 — active-low. Controls valve or load | LOW = relay energised (load on). 5 V relay coil. Optoisolated. |
+| GPIO9 | I²C SDA (open-drain) | DS3231 RTC, SSD1306 OLED, ADS1115 — shared Wire bus | 4.7 kΩ pull-up on DS3231 module. Do not add more. |
+| GPIO10 | INPUT PULLUP | OLED cycle button — tactile button to GND | LOW = pressed. Advances OLED frame immediately. |
+| GPIO11 | OUTPUT | SPI MOSI — microSD card | SPI2/FSPI bus. |
+| GPIO12 | OUTPUT | SPI SCK — microSD card | |
+| GPIO13 | INPUT | SPI MISO — microSD card | |
+| GPIO14 | OUTPUT | SPI CS — microSD card (software CS) | |
+
+**Hard-reserved board pins (do not use):**
+
+| GPIO | Function |
+|---|---|
+| GPIO15 | CAN TXD2 (TWAI) |
+| GPIO16 | CAN RXD2 (TWAI) |
+| GPIO17 | RS485 TXD1 (UART1) → YiErYi water quality sensor TX |
+| GPIO18 | RS485 RXD1 (UART1) → YiErYi water quality sensor RX |
+| GPIO19 | USB D− |
+| GPIO20 | USB D+ |
+| GPIO21 | RS485 DE/RE — auto-controlled by `UART_MODE_RS485_HALF_DUPLEX` |
+| GPIO38 | Onboard PCF85063 RTC SDA (internal, not used by firmware) |
+| GPIO39 | Onboard PCF85063 RTC SCL (internal, not used by firmware) |
+| GPIO43 | USB-CDC console TXD |
+| GPIO44 | USB-CDC console RXD |
+| GPIO47 | Onboard CH1 control |
+| GPIO48 | Onboard WS2812 RGB LED — firmware status indicator |
+
+### SH1.0 side sockets (no enclosure opening required)
+
+| GPIO | ADC | Current use |
+|---|---|---|
+| GPIO1 | ADC1 ch0 | **Free** — candidate for pressure sensor (future M-PressureSensor) |
+| GPIO2 | ADC1 ch1 | **Free** — candidate for pressure sensor or leak AO |
+
+> All GPIOs are 3.3 V max. Never connect a 5 V signal directly. Flow sensor signal lines are 3.3 V safe despite the sensor running on 5 V VCC.
+
+> The source of truth for pin assignments is `include/pins.h`. This table must match it — update both together.

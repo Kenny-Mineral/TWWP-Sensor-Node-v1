@@ -6,12 +6,16 @@
 #include "config.h"
 #include "net_mqtt.h"
 #include "sensor_flow.h"
+#include "sensor_yieryi.h"
+#include "sensor_tds_meter.h"
 #include "store_sd.h"
 #include "time_rtc.h"
 
 static const char* SESSION_LOG_HEADER =
     "session_id,start_ts,end_ts,duration_s,flow_duration_s,idle_time_s,"
-    "volume_out_L,volume_in_L,peak_rate_out,peak_rate_in";
+    "volume_out_L,volume_in_L,peak_rate_out,peak_rate_in,"
+    "wq_ph,wq_orp,wq_ec,wq_tds_ppm,tds_pre_ppm,tds_post_ppm,"
+    "user_id";
 
 static bool     sessionEnabled          = true;
 static uint32_t sessionIdleTimeoutMs    = SESSION_IDLE_TIMEOUT_MS;
@@ -57,6 +61,14 @@ struct SessionRecord {
     float    volIn;
     float    peakOut;
     float    peakIn;
+    // Water quality snapshot at session end (NaN = sensor unavailable)
+    float    wqPh;
+    int16_t  wqOrpMv;
+    float    wqEcUsCm;
+    float    wqTdsPpm;
+    float    tdsPrePpm;
+    float    tdsPostPpm;
+    uint32_t userId;   // 0 = anonymous; populated by TapLock / app in future
 };
 
 static SessionRecord recentSessions[SESSIONS_RECENT_MAX];
@@ -67,7 +79,9 @@ static uint8_t       recentHead  = 0;
 
 static void pushRecentSession(uint32_t id, uint32_t startTs, uint32_t endTs,
                                uint32_t durationS, uint32_t flowDurS, uint32_t idleTimeS,
-                               float volOut, float volIn, float peakOut, float peakIn) {
+                               float volOut, float volIn, float peakOut, float peakIn,
+                               float wqPh, int16_t wqOrpMv, float wqEcUsCm, float wqTdsPpm,
+                               float tdsPrePpm, float tdsPostPpm, uint32_t userId) {
     uint8_t slot;
     if (recentCount < SESSIONS_RECENT_MAX) {
         slot = (recentHead + recentCount) % SESSIONS_RECENT_MAX;
@@ -77,7 +91,9 @@ static void pushRecentSession(uint32_t id, uint32_t startTs, uint32_t endTs,
         recentHead = (recentHead + 1) % SESSIONS_RECENT_MAX;
     }
     recentSessions[slot] = { id, startTs, endTs, durationS, flowDurS, idleTimeS,
-                              volOut, volIn, peakOut, peakIn };
+                              volOut, volIn, peakOut, peakIn,
+                              wqPh, wqOrpMv, wqEcUsCm, wqTdsPpm,
+                              tdsPrePpm, tdsPostPpm, userId };
 }
 
 // ── SD persistence ────────────────────────────────────────────────────────────
@@ -99,6 +115,13 @@ static void saveRecentSessionsToSd() {
         s["vi"]  = recentSessions[slot].volIn;
         s["po"]  = recentSessions[slot].peakOut;
         s["pi"]  = recentSessions[slot].peakIn;
+        if (!isnan(recentSessions[slot].wqPh))      s["wq_ph"]  = recentSessions[slot].wqPh;
+        if (recentSessions[slot].wqOrpMv != -32768) s["wq_orp"] = recentSessions[slot].wqOrpMv;
+        if (!isnan(recentSessions[slot].wqEcUsCm))  s["wq_ec"]  = recentSessions[slot].wqEcUsCm;
+        if (!isnan(recentSessions[slot].wqTdsPpm))  s["wq_tds"] = recentSessions[slot].wqTdsPpm;
+        if (!isnan(recentSessions[slot].tdsPrePpm))  s["tds_pre"]  = recentSessions[slot].tdsPrePpm;
+        if (!isnan(recentSessions[slot].tdsPostPpm)) s["tds_post"] = recentSessions[slot].tdsPostPpm;
+        s["uid"] = recentSessions[slot].userId;
     }
     storeSd_writeJsonFile(SD_SESSIONS_RECENT_PATH, doc);
 }
@@ -113,6 +136,12 @@ static void loadRecentSessionsFromSd() {
     recentHead  = 0;
     for (JsonObject s : arr) {
         if (recentCount >= SESSIONS_RECENT_MAX) break;
+        float loadedPh  = s["wq_ph"].isNull()  ? NAN : s["wq_ph"].as<float>();
+        int16_t loadedOrp = s["wq_orp"].isNull() ? -32768 : (int16_t)s["wq_orp"].as<int>();
+        float loadedEc  = s["wq_ec"].isNull()  ? NAN : s["wq_ec"].as<float>();
+        float loadedTds = s["wq_tds"].isNull() ? NAN : s["wq_tds"].as<float>();
+        float loadedPre = s["tds_pre"].isNull()  ? NAN : s["tds_pre"].as<float>();
+        float loadedPost= s["tds_post"].isNull() ? NAN : s["tds_post"].as<float>();
         recentSessions[recentCount++] = {
             s["id"]  | 0u,
             s["sts"] | 0u,
@@ -123,7 +152,10 @@ static void loadRecentSessionsFromSd() {
             s["vo"]  | 0.0f,
             s["vi"]  | 0.0f,
             s["po"]  | 0.0f,
-            s["pi"]  | 0.0f
+            s["pi"]  | 0.0f,
+            loadedPh, loadedOrp, loadedEc, loadedTds,
+            loadedPre, loadedPost,
+            s["uid"] | 0u
         };
     }
     Serial.printf("[SESSION] loaded %d recent sessions from SD\n", recentCount);
@@ -132,8 +164,8 @@ static void loadRecentSessionsFromSd() {
 // ── MQTT publish ──────────────────────────────────────────────────────────────
 
 static void publishRecentSessions() {
-    // ~150 bytes per session × 10 + overhead
-    static char buf[2048];
+    // ~250 bytes per session × 10 + overhead (with WQ fields)
+    static char buf[4096];
     JsonDocument doc;
     JsonArray arr = doc["sessions"].to<JsonArray>();
     // Newest-first for display
@@ -150,6 +182,13 @@ static void publishRecentSessions() {
         s["vol_in"]      = serialized(String(recentSessions[slot].volIn,   3));
         s["peak_out"]    = serialized(String(recentSessions[slot].peakOut, 3));
         s["peak_in"]     = serialized(String(recentSessions[slot].peakIn,  3));
+        if (!isnan(recentSessions[slot].wqPh))      s["wq_ph"]   = serialized(String(recentSessions[slot].wqPh, 2));
+        if (recentSessions[slot].wqOrpMv != -32768) s["wq_orp"]  = recentSessions[slot].wqOrpMv;
+        if (!isnan(recentSessions[slot].wqEcUsCm))  s["wq_ec"]   = serialized(String(recentSessions[slot].wqEcUsCm, 0));
+        if (!isnan(recentSessions[slot].wqTdsPpm))  s["wq_tds"]  = serialized(String(recentSessions[slot].wqTdsPpm, 0));
+        if (!isnan(recentSessions[slot].tdsPrePpm))  s["tds_pre"]  = serialized(String(recentSessions[slot].tdsPrePpm, 0));
+        if (!isnan(recentSessions[slot].tdsPostPpm)) s["tds_post"] = serialized(String(recentSessions[slot].tdsPostPpm, 0));
+        s["user_id"]     = recentSessions[slot].userId;
     }
     size_t written = serializeJson(doc, buf, sizeof(buf));
     if (written > 0 && written < sizeof(buf)) {
@@ -172,6 +211,15 @@ static void finaliseSession() {
     float    rawIn         = sensorFlow_getTotalL(2) - sessionStartTotal2;
     float    volOut        = rawOut > 0.0f ? rawOut : 0.0f;
     float    volIn         = rawIn  > 0.0f ? rawIn  : 0.0f;
+
+    // Water quality snapshot at end of session (zone 3 = Remin = post-tap water)
+    float   wqPh    = sensorYieryi_hasPh(YIERYI_ZONE_REMIN)   ? sensorYieryi_getPh(YIERYI_ZONE_REMIN)           : NAN;
+    int16_t wqOrp   = sensorYieryi_hasOrp(YIERYI_ZONE_REMIN)  ? (int16_t)sensorYieryi_getOrpMv(YIERYI_ZONE_REMIN) : -32768;
+    float   wqEc    = sensorYieryi_hasEc(YIERYI_ZONE_REMIN)    ? sensorYieryi_getEcUsCm(YIERYI_ZONE_REMIN)    : NAN;
+    float   wqTds   = sensorYieryi_isOnline(YIERYI_ZONE_REMIN) ? sensorYieryi_getTdsPpm(YIERYI_ZONE_REMIN)    : NAN;
+    float   tdsPre  = sensorTdsMeter_isOnline(TDS_ZONE_PRE_RO)  ? sensorTdsMeter_getTds(TDS_ZONE_PRE_RO)  : NAN;
+    float   tdsPost = sensorTdsMeter_isOnline(TDS_ZONE_POST_RO) ? sensorTdsMeter_getTds(TDS_ZONE_POST_RO) : NAN;
+    uint32_t userId = 0;  // 0 = anonymous; populated by TapLock / app integration
 
     lastSessionId            = sessionId;
     lastSessionStartTs       = sessionStartTs;
@@ -196,14 +244,30 @@ static void finaliseSession() {
     doc["volume_in_L"]     = serialized(String(volIn,          3));
     doc["peak_rate_out"]   = serialized(String(sessionPeakOut, 3));
     doc["peak_rate_in"]    = serialized(String(sessionPeakIn,  3));
-    char payload[320];
+    doc["user_id"]         = userId;
+    if (!isnan(wqPh))    doc["wq_ph"]   = serialized(String(wqPh, 2));
+    if (wqOrp != -32768) doc["wq_orp"]  = wqOrp;
+    if (!isnan(wqEc))    doc["wq_ec"]   = serialized(String(wqEc, 0));
+    if (!isnan(wqTds))   doc["wq_tds"]  = serialized(String(wqTds, 0));
+    if (!isnan(tdsPre))  doc["tds_pre"]  = serialized(String(tdsPre, 0));
+    if (!isnan(tdsPost)) doc["tds_post"] = serialized(String(tdsPost, 0));
+    char payload[512];
     if (serializeJson(doc, payload, sizeof(payload)) > 0) {
         netMqtt_publishSub(TOPIC_SESSION, payload);
     }
 
-    // SD session log
-    char row[192];
-    snprintf(row, sizeof(row), "%lu,%lu,%lu,%lu,%lu,%lu,%.3f,%.3f,%.3f,%.3f",
+    // SD session log — WQ fields blank if sensor not available
+    char wqPhStr[8], wqOrpStr[8], wqEcStr[8], wqTdsStr[8], tdsPreStr[8], tdsPostStr[8];
+    auto fmtF = [](char* b, size_t n, float v, int dp) { if (isnan(v)) b[0]='\0'; else snprintf(b, n, "%.*f", dp, v); };
+    auto fmtI = [](char* b, size_t n, int16_t v) { if (v == -32768) b[0]='\0'; else snprintf(b, n, "%d", v); };
+    fmtF(wqPhStr,   sizeof(wqPhStr),   wqPh,   2);
+    fmtI(wqOrpStr,  sizeof(wqOrpStr),  wqOrp);
+    fmtF(wqEcStr,   sizeof(wqEcStr),   wqEc,   0);
+    fmtF(wqTdsStr,  sizeof(wqTdsStr),  wqTds,  0);
+    fmtF(tdsPreStr, sizeof(tdsPreStr), tdsPre,  0);
+    fmtF(tdsPostStr,sizeof(tdsPostStr),tdsPost, 0);
+    char row[256];
+    snprintf(row, sizeof(row), "%lu,%lu,%lu,%lu,%lu,%lu,%.3f,%.3f,%.3f,%.3f,%s,%s,%s,%s,%s,%s,%lu",
              (unsigned long)sessionId,
              (unsigned long)sessionStartTs,
              (unsigned long)endTs,
@@ -211,7 +275,10 @@ static void finaliseSession() {
              (unsigned long)flowDurS,
              (unsigned long)idleTimeS,
              volOut, volIn,
-             sessionPeakOut, sessionPeakIn);
+             sessionPeakOut, sessionPeakIn,
+             wqPhStr, wqOrpStr, wqEcStr, wqTdsStr,
+             tdsPreStr, tdsPostStr,
+             (unsigned long)userId);
     storeSd_appendCsvRow(SD_SESSION_LOG_PATH, row, SESSION_LOG_HEADER);
 
     Serial.printf("[SESSION] #%lu ended — out=%.3fL in=%.3fL dur=%lus flow=%lus idle=%lus\n",
@@ -220,7 +287,8 @@ static void finaliseSession() {
 
     // Ring buffer + retained MQTT + SD snapshot
     pushRecentSession(sessionId, sessionStartTs, endTs, durationS, flowDurS, idleTimeS,
-                      volOut, volIn, sessionPeakOut, sessionPeakIn);
+                      volOut, volIn, sessionPeakOut, sessionPeakIn,
+                      wqPh, wqOrp, wqEc, wqTds, tdsPre, tdsPost, userId);
     publishRecentSessions();
     saveRecentSessionsToSd();
 

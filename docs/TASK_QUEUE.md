@@ -7,6 +7,50 @@ User-facing command, setup, config, troubleshooting, SD, MQTT/offload, or monito
 
 ---
 
+## M-Stabilize — deployment readiness (2026-05-26)
+
+### M-FlowMappingFix
+- [x] Lock the canonical flow map in firmware: Ch1 = tap output (DWS-MH-02, GPIO4), Ch2 = RO output to tank/system (USN-HS06PE, GPIO5), Ch3 = raw RO input / grey-water reference (USN-HS06PS, GPIO7).
+- [x] Update tank integration to use Ch2 in minus Ch1 out. Tank full detection now watches Ch2 stopping, not Ch3.
+- [x] Update HA discovery labels, OLED calibration view, and flow calibration labels to match the canonical map.
+- [x] Extend OLED flow calibration mode to include channel 3.
+- [ ] Upload to a live node and verify serial output, MQTT heartbeat, HA entity names, and tank math all match the canonical map.
+- [ ] Update Lovelace card labels/entity references anywhere the dashboard still says `Tank Fill` for channel 3.
+
+### M-RemoteOTAHardening
+- [x] Keep MQTT-driven OTA as the off-site update path; keep ArduinoOTA documented as LAN-only.
+- [x] Add explicit OTA observability: retained `twwp/<id>/ota_state` updates now include current OTA state, progress, rollback marker, validation-pending flag, URL, and last error when available.
+- [x] Publish `ota_validation_pending` and `ota_rolled_back` in the main operational status so remote operators can tell whether the node is still inside the rollback window.
+- [x] Keep `restart_device` as the supported remote reboot path and republish current status/config after command handling.
+- [ ] Run a live MQTT-driven OTA on deployed hardware: good image path, bad MD5 path, and confirm rollback behavior if validation fails.
+- [ ] Confirm remote reboot + reconnect behavior through Home Assistant / MQTT end-to-end.
+
+### M-LiveDataReduction
+- [x] Split telemetry into three retained topics:
+  - `twwp/<id>/status` — 10 s operational heartbeat
+  - `twwp/<id>/status_diag` — slower diagnostics heartbeat
+  - `twwp/<id>/status_cfg` — on-connect / on-change configuration state
+- [x] Move calibration/config-heavy flow fields off the main heartbeat (`k_table_*`, `sensor_model_*`, debounce, calibration reference values, voltage calibration, valve config, tank capacity, session thresholds).
+- [x] Move flow diagnostic entities off the main heartbeat (`pulses_raw_*`, `k_applied_*`, smoothed-flow diagnostics, flow cal state/suggested/pulses).
+- [ ] Capture before/after payload size from a live node and record the reduction in `SESSION.md`.
+- [ ] Verify HA entities bound to `status_diag` and `status_cfg` keep updating as expected on a live node.
+
+### M-NodeRunbook
+- [x] Add a field-tech-first deployment and recovery section to `USER_OPERATIONS.md`.
+- [x] Add a junior-dev appendix covering versioning, topic split, config ownership, and OTA validation/rollback expectations.
+- [ ] Dry-run the runbook from a clean node and fix any hidden assumptions.
+
+### M-FirstBootIndicator
+Pre-deploy gap: if `/config/node.json` is absent on a fresh SD card the node silently starts with compile-time defaults and no telemetry indicates this. Flow totals start at 0 and no warning is logged.
+- [ ] Add a "factory reset" flag in NVS (e.g. `prefs.getBool("first_boot", true)`) cleared after first successful SD config load. Publish `"first_boot": true` in the operational heartbeat until cleared.
+- [ ] **Pre-deployment must-do (immediate):** Verify `/config/node.json` exists on the SD card with all 3-channel sensor models, K-factors, debounce settings, and `tank_capacity_l` before first flash.
+
+### M-SdBufferOverflowAlert
+Pre-deploy gap: SD offline ring buffer silently drops the oldest messages when the 500-line limit is hit (≈8 min of 10 s heartbeats). The drop is logged to the crash log only — no MQTT alert reaches the operator.
+- [ ] Add a `sd_buffer_overflow_count` field to `status_diag` heartbeat, incremented on each drop event.
+- [ ] Consider increasing `SD_MAX_BUFFER_LINES` from 500 to 2000 (≈33 min coverage) for remote deployment.
+- [ ] Test: kill broker for 15 min on a live node → confirm `sd_buffer_overflow_count` appears in `status_diag` when MQTT restores.
+
 ## M0 — bring-up
 
 ### M0.1 — User-side prep
@@ -130,6 +174,27 @@ Valve type not yet finalised — currently using a 12V LED + relay module to sim
 - [x] Server: Hetzner nginx serves `https://twwp-iot.duckdns.org/firmware/` with TLS.
 - [x] Documentation: USER_OPERATIONS, MQTT_TOPIC_MAP, FIRMWARE_ARCHITECTURE updated.
 - [x] **`platformio.ini` OTA env fix** — `[env:ota]` `extends` directive corrected to `env:waveshare-esp32-s3-rs485-can` (was missing `env:` prefix causing `UndefinedEnvPlatformError`). `upload_port` set to direct IP `192.168.20.18` (mDNS `twwp-wh_001.local` does not resolve on this network).
+
+## M4.1 — OTA reliability follow-up (2026-05-17)
+
+Discovered while trying to OTA the M-Upload.3 portal fixes. OTA path has two real problems:
+
+### Bug 1: loopTask stack overflow on OTA start ✓ FIXED
+- Symptom: `Stack canary watchpoint triggered (loopTask)` on every OTA cmd, immediate reboot, OTA never starts. Looked like rollback but was actually a crash before download began.
+- Cause: HTTPS download (mbedTLS handshake) needs more than the default 8 KB Arduino loopTask stack. Codebase grew enough that we now exceed it.
+- Fix: `SET_LOOP_TASK_STACK_SIZE(16384);` in `src/main.cpp` (above `setup()`). Confirmed via serial — OTA now starts without crashing.
+
+### Bug 2: OTA download hangs ~84s then WiFi disconnects (ASSOC_LEAVE) and device boots a stale partition
+- Symptom: After cmd received, `setSocketOption fail` warning (benign), then long silence, then `Reason: 8 - ASSOC_LEAVE`, then `rst:0xc (RTC_SW_CPU_RST)`, then boots an unexpected old firmware version from the inactive OTA partition rather than rolling back to the previously running one.
+- Likely causes (need investigation, not yet fixed):
+  - TLS handshake / HTTP download is blocking the loop long enough that the AP kicks the station, or some watchdog is firing
+  - `otadata` may be getting updated optimistically before the new partition is fully written, so a mid-download crash leaves the bootloader pointed at a partially-written or stale slot
+- Suggested fixes for a fresh session:
+  - Move the OTA download into its own FreeRTOS task with a dedicated 16–24 KB stack (instead of running on loopTask)
+  - Switch from `HTTPUpdate` / `WiFiClientSecure` + `Update.h` to ESP-IDF's `esp_https_ota` (more robust, async-friendly, handles partition state correctly)
+  - Make sure `esp_ota_set_boot_partition` is only called after the full image has been written and verified
+  - Add WiFi keepalive / disable power-save during OTA download
+- Workaround until fixed: USB flash. The device is reliably flashable via `pio run -t upload` over `/dev/ttyACM0`. Power-cycle (unplug/replug USB) after flash to boot the new image.
 
 ## Standalone 12V boot fix ✓ DONE (2026-05-04)
 
@@ -408,13 +473,23 @@ Review and harden the firmware against unexpected power cuts. Taps run on 12V ba
 
 ---
 
-## Server Security Hardening (non-firmware)
+## M-CalWorkflow — Calibration Workflow + HA Dashboard (2026-05-17)
 
-Found during M-Upload.2 deployment. Fix before going to production with real users.
-
-- [ ] **UFW inactive on Hetzner** — `ufw enable` + lock down: allow 22 (SSH), 80, 443, 8883 only. Verify 1883 blocked externally (mosquitto currently has `listener_allow_anonymous true` on 1883).
-- [ ] **Mosquitto 1883 listener** — either remove the `listener 1883` block from `/mosquitto/config/mosquitto.conf` entirely (TLS-only policy), or confirm it is only reachable via Docker internal network. Restart mosquitto after change.
-- [ ] **Mosquitto password file permissions** — `docker exec mqtt chmod 0700 /mosquitto/config/passwords` to suppress the world-readable warning.
+- [x] **OLED cal display mode** — `drawCalMode()` in `display_oled.cpp`. Auto-detects active flow/TDS cal, stops carousel, shows full-screen cal view (step, live pulses/EC, suggested value). Resumes on idle.
+- [x] **OLED sticky header** — removed "TWWP" text from centre slot. Leak warning still blinks when wet.
+- [x] **Fast cal-state publish** — `handleFastCalPublish()` in `main.cpp`. Publishes cal fields every 2s (unbuffered) while flow cal is COLLECTING. Makes HA pulse counter update live during fill.
+- [x] **Calibration session logging** — `publishCalSession()` in `main.cpp`. On wizard accept: JSON to `twwp/<id>/cal_session` (MQTT) + row to `/log/cal_sessions.csv` (SD). Fields: ts, type, channel_or_zone, old_value, new_value, ref_value, duration_s.
+- [x] **HA discovery** — `cal_state_1/2` and `cal_pulses_1/2` added as diagnostic sensor entities.
+- [x] **Lovelace: Water Quality tab** — live tiles for Pre-RO TDS, Post-RO TDS, Remin YiErYi.
+- [x] **Lovelace: Calibration tab** — WQ probe procedure + date recording; TDS EC wizard with markdown; Flow K-factor wizard per channel (phone-friendly sequential layout); Voltage cal.
+- [x] **Lovelace: Sessions bar chart** — apexcharts-card (v2.2.3) bar chart of session volumes above existing flex-table. Downloaded to HA www, registered via WebSocket API.
+- [x] **Flow cal safety — auto-abort** — 90s idle timeout on COLLECTING state with < 100 pulses. Fires in `sensorFlow_loop()`. `cal_state` shows `timed_out` for 5s. OLED shows `!! NO FLOW !!`. SD event logged.
+- [x] **Flow cal safety — minimum pulse guard** — `calCommit()` rejects < 100 pulses. State shows `too_few_pulses` for 5s then returns to `collecting`. K factor unchanged.
+- [x] **OLED countdown** — shows `Abort in Xs` when no pulses and < 30s until auto-abort. Shows descriptive error screens for `timed_out` and `too_few_pulses`.
+- [x] **Fast publish extended** — broadcasts `timed_out`/`too_few_pulses` states and `cal_secs_until_timeout` to HA in real time.
+- [ ] **Entity ID verification** — confirm `sensor.twwp_wh_001_cal_state_1`, `tds_pre_ro_raw_ec`, `flow_rate_output/input` entity IDs match actual HA discovery names. Fix dashboard YAML if any differ.
+- [ ] **Calibration history in InfluxDB/Grafana** — `/log/cal_sessions.csv` is the current record; surfacing in Grafana is a future task (M-CalHistory).
+- [ ] **TDS cal safety** — apply similar idle timeout to TDS cal ACTIVE state (less critical since it's probe-in-solution, not fill-a-container, but worth adding consistency).
 
 ---
 
@@ -424,3 +499,31 @@ Found during M-Upload.2 deployment. Fix before going to production with real use
 - [ ] Decommission command: `{"action":"decommission"}` → wipe NVS, reboot to captive portal.
 - [ ] MQTT rate-limit guard: > 60 publishes/min → back off + warn.
 - [ ] Document credential rotation in `docs/DEVICE_LIFECYCLE.md`.
+
+---
+
+## M-3rdSensor — 3rd Flow Channel + Tank Monitoring (2026-05-22)
+
+- [x] **Ch3 firmware** — DWS-MH-02 on GPIO7 (repurposed from pressure sensor). Full sensor_flow.cpp extension: ISR, statics, K-table, cal state machine, all API functions extended to ch=1|2|3.
+- [x] **tank_monitor driver** — `src/tank_monitor.cpp/.h`. Software volume integration (Ch3-in − Ch1-out). Tank full = flow stops 30s + level ≥ 90% capacity → snap level to capacity. NVS persist every 60s. Self-calibrating capacity.
+- [x] **MQTT buffer** — increased to 8192 bytes (was 4096; 3-channel heartbeat ~5.8KB caused silent publish failure).
+- [x] **Heartbeat extended** — ch3 fields (flow_rate_3, k_factor_3, cal_state_3, etc.), tank fields (tank_level_l/pct, tank_full, tank_capacity_l), derived fields (grey_waste_lpm, ro_efficiency, grey_waste_today).
+- [x] **HA discovery** — ch3 entities (flow sensors, K-table, cal wizard), tank entities, derived sensors all auto-discovered.
+- [x] **OLED** — migrated tank frame from simulation to tankMonitor. Ch3 used for real fill rate.
+- [x] **Dashboard** — Tank section (Overview), Ch3 + RO Efficiency (Flow Data), Ch3 cal wizard + Tank Volume Calibration + Dynamic K-table card (Calibration). 139 entity refs, 0 broken.
+- [x] **Excel workbook** — DWS-MH-02 added to SensorConfig; CalibrationLog + TankCalibration sheets added.
+- [x] **DWS-MH-02 field calibration data** — 3 runs from 2026-05-18 recovered from InfluxDB (db=twwp_ha) and entered into 5L Baseline (rows 18–20) and CalibrationLog (rows 11–13). K values: 874 (0.91 LPM/Medium), 916 (1.23 LPM/High), 939 (1.46 LPM/High). All 3 runs: 5.0 L ref vol. Field K is 12–22% higher than formula.
+- [ ] **Wire USN-HS06PS** — connect Ch3 sensor to GPIO7. Verify `flow_rate_3` shows in HA. (DWS-MH-02 is Ch1/GPIO4 — may already be wired.)
+- [ ] **Run tank calibration** — drain tanks → Reset to Empty in HA → fill 2–3 hrs → confirm auto-capacity-detect.
+- [ ] **Update node.json** — write ch3 K-table to SD card `/config/node.json` (see SESSION.md for values).
+- [ ] **Run Low-band DWS-MH-02 cal** — slow fill (<0.4 LPM) to complete K-table for fill-line accuracy.
+
+## ~~M-SheetsIntegration~~ — ABANDONED (2026-05-23)
+
+Google Sheets / Apps Script / cal-sheet-bridge abandoned per user direction. Excel is the sole calibration data store. Cal sessions are logged to `/log/cal_sessions.csv` on SD card, and field runs are manually entered into the Excel workbook. The `cal-sheet-bridge` Docker container on Hetzner exists but is non-functional (SHEETS_WEBHOOK_URL empty) — leave it; no action needed.
+
+## M-PressureSensor — Pressure Sensor (deferred from M2)
+
+- [ ] GPIO7 now used by flow ch3. Find new free pin (candidates: GPIO1, GPIO2 on SH1.0 sockets)
+- [ ] Pressure sensor TBD (not yet purchased — see COMPONENTS.md M2 section)
+- [ ] Add to PIN_ALLOCATION.md + pins.h when hardware confirmed

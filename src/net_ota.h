@@ -22,3 +22,4 @@ const char* netOta_getUrl();
 
 void netOta_rollback();
 bool netOta_isRollbackPending();
+bool netOta_isAwaitingValidation();

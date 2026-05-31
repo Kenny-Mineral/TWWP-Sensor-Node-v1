@@ -27,5 +27,6 @@ bool storeSd_readJsonFile(const char* path, JsonDocument& doc);
 bool storeSd_writeJsonFile(const char* path, JsonDocument& doc);
 bool storeSd_readTextFile(const char* path, String& outText);
 bool storeSd_writeTextFile(const char* path, const char* text);
+bool storeSd_deleteFile(const char* path);
 bool storeSd_logDataRow(const char* row, const char* header);
 bool storeSd_appendCsvRow(const char* path, const char* row, const char* header);

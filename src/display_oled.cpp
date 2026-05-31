@@ -4,6 +4,7 @@
 #include "SSD1306Wire.h"
 #include "OLEDDisplayUi.h"
 #include "pins.h"
+#include "config.h"
 #include "sensor_flow.h"
 #include "sensor_yieryi.h"
 #include "sensor_tds_meter.h"
@@ -16,6 +17,7 @@
 #include "time_rtc.h"
 #include "session_flow.h"
 #include "wq_config.h"
+#include "tank_monitor.h"
 #include <WiFi.h>
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -23,10 +25,6 @@
 #define OLED_FPS            30
 #define OLED_MS_PER_FRAME   5000
 #define BTN_DEBOUNCE_MS     200
-#define TANK_CAPACITY_L     20.0f
-// 4:1 waste:pure RO ratio → 20% of feed becomes stored pure water
-#define TANK_RO_RECOVERY    0.20f
-#define TANK_NVS_SAVE_MS    60000UL
 #define HEADER_SEP_Y        12
 
 // ── XBM branding bitmap (48×32) ─────────────────────────────────────────────
@@ -75,9 +73,6 @@ static SSD1306Wire   s_disp(OLED_I2C_ADDR, PIN_OLED_SDA, PIN_OLED_SCL,
 static OLEDDisplayUi s_ui(&s_disp);
 static bool          s_ready       = false;
 static uint32_t      s_btnLastMs   = 0;
-static float         s_tankLiters  = TANK_CAPACITY_L;
-static uint32_t      s_tankLastMs  = 0;
-static uint32_t      s_tankSaveMs  = 0;
 static Preferences   s_prefs;
 
 // Invisible 8×8 symbol — disables the ThingPulse frame indicator dots
@@ -127,8 +122,6 @@ static void drawHeader(OLEDDisplay* d, OLEDDisplayUiState*) {
     d->setTextAlignment(TEXT_ALIGN_CENTER);
     if (sensorLeak_isWet() && (millis() % 1000 < 500)) {
         d->drawString(64, 0, "!LEAK!");
-    } else {
-        d->drawString(64, 0, "TWWP");
     }
 
     d->setTextAlignment(TEXT_ALIGN_RIGHT);
@@ -244,8 +237,7 @@ static void frameFlow(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y)
 }
 
 // ── Frame 4: Storage tank ──────────────────────────────────────────────────
-// Tank level is calculated in updateTankLevel() from flow differential.
-// Override with displayOled_setTankLiters() when a real level sensor is wired.
+// Tank level is read from tank_monitor.cpp (Ch2 - Ch1 integration).
 static void frameTank(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y) {
     char buf[20];
 
@@ -255,22 +247,26 @@ static void frameTank(OLEDDisplay* d, OLEDDisplayUiState*, int16_t x, int16_t y)
 
     // Vertical level bar — outline 16px wide × 36px tall
     d->drawRect(x + 4, y + 25, 16, 36);
-    int fillH = (int)((s_tankLiters / TANK_CAPACITY_L) * 34.0f);
+    float tankL    = tankMonitor_getLevelL();
+    float tankCap  = tankMonitor_getCapacityL();
+    float tankFrac = (tankCap > 0.0f) ? (tankL / tankCap) : 0.0f;
+    if (tankFrac > 1.0f) tankFrac = 1.0f;
+    int fillH = (int)(tankFrac * 34.0f);
     fillH = constrain(fillH, 0, 34);
     if (fillH > 0) {
         d->fillRect(x + 5, y + 26 + (34 - fillH), 14, fillH);
     }
 
     d->setFont(ArialMT_Plain_16);
-    snprintf(buf, sizeof(buf), "%d%%", (int)((s_tankLiters / TANK_CAPACITY_L) * 100.0f));
+    snprintf(buf, sizeof(buf), "%d%%", (int)(tankFrac * 100.0f));
     d->drawString(x + 28, y + 26, buf);
 
     d->setFont(ArialMT_Plain_10);
-    snprintf(buf, sizeof(buf), "%.1f/%.0fL", s_tankLiters, TANK_CAPACITY_L);
+    snprintf(buf, sizeof(buf), "%.1f/%.0fL", tankL, tankCap);
     d->drawString(x + 28, y + 43, buf);
 
-    float pureRate = sensorFlow_getRateLpm(2) * TANK_RO_RECOVERY;
-    float needed   = TANK_CAPACITY_L - s_tankLiters;
+    float pureRate = sensorFlow_getRateLpm(2);  // Ch2 = RO output into the tank
+    float needed   = tankCap - tankL;
     if (needed < 0.1f) {
         snprintf(buf, sizeof(buf), "Full!");
     } else if (pureRate > 0.01f) {
@@ -334,28 +330,7 @@ static FrameCallback   s_frames[]   = { frameWqSummary, frameRemin,
                                          frameBranding };
 static OverlayCallback s_overlays[] = { drawHeader };
 
-// ── Internal updates ───────────────────────────────────────────────────────
-static void updateTankLevel() {
-    uint32_t now = millis();
-    if (s_tankLastMs == 0) { s_tankLastMs = now; return; }
-
-    float dt = (float)(now - s_tankLastMs) / 60000.0f;
-    s_tankLastMs = now;
-    if (dt > 1.0f) dt = 1.0f;  // cap jump after a pause
-
-    s_tankLiters += sensorFlow_getRateLpm(2) * dt * TANK_RO_RECOVERY;
-    s_tankLiters -= sensorFlow_getRateLpm(1) * dt;
-    s_tankLiters  = constrain(s_tankLiters, 0.0f, TANK_CAPACITY_L);
-}
-
-static void saveTankIfDue() {
-    uint32_t now = millis();
-    if (now - s_tankSaveMs < TANK_NVS_SAVE_MS) return;
-    s_tankSaveMs = now;
-    s_prefs.begin("oled", false);
-    s_prefs.putFloat("tank_l", s_tankLiters);
-    s_prefs.end();
-}
+// Tank level now managed by tank_monitor.cpp; no simulation here.
 
 static void handleButton() {
     uint32_t now = millis();
@@ -388,13 +363,104 @@ static void drawUploadMode() {
     s_disp.display();
 }
 
+// ── Calibration mode screen ───────────────────────────────────────────────
+// Returns true (and draws the cal screen) if any calibration is in progress.
+// Priority: flow ch1 > flow ch2 > flow ch3 > TDS zone 0 > TDS zone 1.
+static bool drawCalMode() {
+    const char* fc1 = sensorFlow_getCalState(1);
+    const char* fc2 = sensorFlow_getCalState(2);
+    const char* fc3 = sensorFlow_getCalState(3);
+    const char* tc0 = sensorTdsMeter_getCalState(0);
+    const char* tc1 = sensorTdsMeter_getCalState(1);
+
+    bool flowCh1Active = strcmp(fc1, "idle") != 0;
+    bool flowCh2Active = strcmp(fc2, "idle") != 0;
+    bool flowCh3Active = strcmp(fc3, "idle") != 0;
+    bool tdsCh0Active  = strcmp(tc0, "idle") != 0;
+    bool tdsCh1Active  = strcmp(tc1, "idle") != 0;
+
+    if (!flowCh1Active && !flowCh2Active && !flowCh3Active && !tdsCh0Active && !tdsCh1Active) return false;
+
+    char title[22], line1[22], line2[22], line3[22], line4[22];
+
+    if (flowCh1Active || flowCh2Active || flowCh3Active) {
+        uint8_t ch = flowCh1Active ? 1 : (flowCh2Active ? 2 : 3);
+        const char* state = flowCh1Active ? fc1 : (flowCh2Active ? fc2 : fc3);
+        bool done      = strcmp(state, "done") == 0;
+        bool timedOut  = strcmp(state, "timed_out") == 0;
+        bool tooFew    = strcmp(state, "too_few_pulses") == 0;
+
+        snprintf(title, sizeof(title), "FLOW CAL  CH%d", ch);
+        if (timedOut) {
+            strlcpy(line1, "!! NO FLOW !!", sizeof(line1));
+            strlcpy(line2, "Auto-aborted", sizeof(line2));
+            strlcpy(line3, "Open tap then", sizeof(line3));
+            strlcpy(line4, "press START again", sizeof(line4));
+        } else if (tooFew) {
+            strlcpy(line1, "TOO FEW PULSES", sizeof(line1));
+            snprintf(line2, sizeof(line2), "Got:%llu Need:%lu",
+                     (unsigned long long)sensorFlow_getCalPulsesSinceStart(ch),
+                     (unsigned long)FLOW_CAL_MIN_PULSES);
+            strlcpy(line3, "Let more water", sizeof(line3));
+            strlcpy(line4, "flow then COMMIT", sizeof(line4));
+        } else if (done) {
+            strlcpy(line1, "REVIEW RESULT", sizeof(line1));
+            snprintf(line2, sizeof(line2), "New K: %.0f", sensorFlow_getCalSuggestedK(ch));
+            snprintf(line3, sizeof(line3), "Cur K: %.0f", sensorFlow_getKFactor(ch));
+            strlcpy(line4, "Accept/Abort in HA", sizeof(line4));
+        } else {
+            int secsLeft = sensorFlow_getCalSecsUntilTimeout(ch);
+            if (secsLeft >= 0 && secsLeft <= 30) {
+                // Countdown: no flow detected and running out of time
+                snprintf(line1, sizeof(line1), "WAITING FOR FLOW");
+                snprintf(line2, sizeof(line2), "Pulses:%llu",
+                         (unsigned long long)sensorFlow_getCalPulsesSinceStart(ch));
+                snprintf(line3, sizeof(line3), "%.3f L/min", sensorFlow_getRateLpm(ch));
+                snprintf(line4, sizeof(line4), "Abort in %ds", secsLeft);
+            } else {
+                strlcpy(line1, "FILLING...", sizeof(line1));
+                snprintf(line2, sizeof(line2), "Pulses:%llu",
+                         (unsigned long long)sensorFlow_getCalPulsesSinceStart(ch));
+                snprintf(line3, sizeof(line3), "%.3f L/min", sensorFlow_getRateLpm(ch));
+                snprintf(line4, sizeof(line4), "RefVol:%.2fL", sensorFlow_getCalRefVol(ch));
+            }
+        }
+    } else {
+        uint8_t zone = tdsCh0Active ? 0 : 1;
+        const char* state = tdsCh0Active ? tc0 : tc1;
+        const char* zoneName = (zone == 0) ? "PRE-RO" : "POST-RO";
+        bool done = strcmp(state, "done") == 0;
+
+        snprintf(title, sizeof(title), "TDS CAL %s", zoneName);
+        if (done) {
+            strlcpy(line1, "REVIEW RESULT", sizeof(line1));
+            snprintf(line2, sizeof(line2), "New F:%.4f", sensorTdsMeter_getCalSuggestedFactor(zone));
+            snprintf(line3, sizeof(line3), "Cur F:%.4f", sensorTdsMeter_getEcCalFactor(zone));
+            strlcpy(line4, "Accept/Abort in HA", sizeof(line4));
+        } else {
+            strlcpy(line1, "STIR IN SOLUTION", sizeof(line1));
+            snprintf(line2, sizeof(line2), "Raw:%.0f uS", sensorTdsMeter_getRawEc(zone));
+            snprintf(line3, sizeof(line3), "Ref:%.0f uS", sensorTdsMeter_getCalRefEc(zone));
+            strlcpy(line4, "", sizeof(line4));
+        }
+    }
+
+    s_disp.clear();
+    drawHeader(&s_disp, nullptr);
+
+    s_disp.setTextAlignment(TEXT_ALIGN_LEFT);
+    s_disp.setFont(ArialMT_Plain_10);
+    s_disp.drawString(0, 14, title);
+    s_disp.drawString(0, 25, line1);
+    s_disp.drawString(0, 36, line2);
+    s_disp.drawString(0, 47, line3);
+    s_disp.drawString(0, 56, line4);
+    s_disp.display();
+    return true;
+}
+
 // ── Public interface ───────────────────────────────────────────────────────
 bool displayOled_begin() {
-    s_prefs.begin("oled", true);
-    s_tankLiters = s_prefs.getFloat("tank_l", TANK_CAPACITY_L);
-    s_prefs.end();
-    s_tankLiters = constrain(s_tankLiters, 0.0f, TANK_CAPACITY_L);
-
     pinMode(PIN_OLED_BTN, INPUT_PULLUP);
 
     // Wire (main bus, GPIO9/GPIO3) already started by DS3231 driver — just probe
@@ -431,21 +497,13 @@ bool displayOled_begin() {
 
 void displayOled_loop() {
     if (!s_ready) return;
-    updateTankLevel();
     handleButton();
     if (netAp_isActive()) {
         drawUploadMode();
-        saveTankIfDue();
+        return;
+    }
+    if (drawCalMode()) {
         return;
     }
     s_ui.update();
-    saveTankIfDue();
-}
-
-void displayOled_setTankLiters(float l) {
-    s_tankLiters = constrain(l, 0.0f, TANK_CAPACITY_L);
-}
-
-float displayOled_getTankLiters() {
-    return s_tankLiters;
 }
