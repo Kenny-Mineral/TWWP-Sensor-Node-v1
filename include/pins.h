@@ -11,11 +11,11 @@
 #define PIN_STATUS_LED  48   // WS2812 onboard RGB
 
 // M1 — Hall flow sensors
-#define PIN_FLOW_1       4   // USN-HS06PE — purified output, INPUT_PULLUP, interrupt FALLING
-#define PIN_FLOW_2       5   // USN-HS06PS — raw input,      INPUT_PULLUP, interrupt FALLING
+#define PIN_FLOW_1       4   // DWS-MH-02  — tap output (user-side),    INPUT_PULLUP, interrupt FALLING
+#define PIN_FLOW_2       5   // USN-HS06PE — RO output to tank/system,  INPUT_PULLUP, interrupt FALLING
 
-// M1 — Flow sensor ch3 (DWS-MH-02 — RO-to-tank fill line)
-#define PIN_FLOW_3       7   // DWS-MH-02, INPUT_PULLUP, interrupt FALLING
+// M1 — Flow sensor ch3 (USN-HS06PS — RO input / grey-water reference)
+#define PIN_FLOW_3       7   // USN-HS06PS — RO input / grey-water ref, INPUT_PULLUP, interrupt FALLING
 
 // M2 — Pressure (stub, TBD pin — GPIO7 repurposed for flow ch3)
 // #define PIN_PRESSURE  TBD  // Analog ADC, 0–5V via 2:1 divider → 0–2.5V (needs free header pin)
