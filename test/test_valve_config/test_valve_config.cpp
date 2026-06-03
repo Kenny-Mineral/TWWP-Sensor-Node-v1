@@ -1,6 +1,7 @@
 // test/test_valve_config/test_valve_config.cpp
 #include <unity.h>
-#include <Arduino.h>   // test/stubs/Arduino.h — millis(), setMillis(), Serial
+#include <Arduino.h>   // test/stubs/Arduino.h — millis(), setMillis(), Serial, String
+#include <Preferences.h>  // test/stubs/Preferences.h — shared NVS stub (g_nvsStore, class Preferences)
 
 // ── Stubs ────────────────────────────────────────────────────────────────────
 
@@ -29,41 +30,6 @@ void netMqtt_publishSub(const char* topic, const char* payload) {
     strncpy(g_lastAlertTopic,   topic,   sizeof(g_lastAlertTopic)   - 1);
     strncpy(g_lastAlertPayload, payload, sizeof(g_lastAlertPayload) - 1);
 }
-
-// Preferences stub
-#include <map>
-#include <string>
-static std::map<std::string, std::string> g_nvsStore;
-static std::string g_nvsNamespace;
-class Preferences {
-public:
-    void begin(const char* ns, bool) { g_nvsNamespace = ns; }
-    void end() {}
-    bool isKey(const char* k)       { return g_nvsStore.count(std::string(g_nvsNamespace) + "/" + k) > 0; }
-    void putString(const char* k, const char* v) {
-        g_nvsStore[std::string(g_nvsNamespace) + "/" + k] = v;
-    }
-    void putUInt(const char* k, uint32_t v) {
-        g_nvsStore[std::string(g_nvsNamespace) + "/" + k] = std::to_string(v);
-    }
-    void putBool(const char* k, bool v) {
-        g_nvsStore[std::string(g_nvsNamespace) + "/" + k] = v ? "1" : "0";
-    }
-    std::string getString(const char* k, const char* def) {
-        auto it = g_nvsStore.find(std::string(g_nvsNamespace) + "/" + k);
-        return it != g_nvsStore.end() ? it->second : def;
-    }
-    uint32_t getUInt(const char* k, uint32_t def) {
-        auto it = g_nvsStore.find(std::string(g_nvsNamespace) + "/" + k);
-        if (it == g_nvsStore.end()) return def;
-        return (uint32_t)std::stoul(it->second);
-    }
-    bool getBool(const char* k, bool def) {
-        auto it = g_nvsStore.find(std::string(g_nvsNamespace) + "/" + k);
-        if (it == g_nvsStore.end()) return def;
-        return it->second == "1";
-    }
-};
 
 // GPIO stub
 #include "pins.h"

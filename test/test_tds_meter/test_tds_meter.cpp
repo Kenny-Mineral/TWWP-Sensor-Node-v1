@@ -2,11 +2,21 @@
 // Runs on the host via PlatformIO native env; no hardware required.
 
 #include <unity.h>
-#include <Arduino.h>   // resolves to test/stubs/Arduino.h — provides millis(), setMillis(), Serial
+#include <Arduino.h>   // resolves to test/stubs/Arduino.h — provides millis(), setMillis(), Serial, String
+#include <Preferences.h>  // test/stubs/Preferences.h — shared NVS stub
+
+// time_rtc stubs — sensor_tds_meter.cpp calls timeRtc_getISOTimestamp() in calAccept()
+#include "time_rtc.h"
+String   timeRtc_getISOTimestamp() { return String(""); }
+String   timeRtc_getDateString()   { return String(""); }
+uint32_t timeRtc_getUnixTime()     { return 0; }
+bool     timeRtc_isSynced()        { return true; }
+bool     timeRtc_begin()           { return true; }
+void     timeRtc_loop()            {}
 
 // ── Driver under test ─────────────────────────────────────────────────────────
 // Included directly so it compiles in this TU with the stubs already active.
-// sensor_tds_meter.cpp's own #include <Arduino.h> is a no-op (pragma once).
+// sensor_tds_meter.cpp's own #include <Arduino.h> / <Preferences.h> are no-ops (pragma once).
 #include "../../src/sensor_tds_meter.cpp"
 
 // ── Test helpers ──────────────────────────────────────────────────────────────

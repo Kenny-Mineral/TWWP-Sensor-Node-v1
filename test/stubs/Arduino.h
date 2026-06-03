@@ -41,3 +41,16 @@ struct _FakeSerial {
     template<typename T> void print(T) {}
 };
 static _FakeSerial Serial;
+
+// Minimal String stub — covers store_sd.h / time_rtc.h parameter types
+class String {
+    char _buf[128];
+public:
+    String()               { _buf[0] = '\0'; }
+    String(const char* s)  { strncpy(_buf, s ? s : "", sizeof(_buf) - 1); _buf[sizeof(_buf)-1] = '\0'; }
+    const char* c_str() const { return _buf; }
+    size_t length() const  { return strlen(_buf); }
+    bool operator==(const char* s) const { return strcmp(_buf, s ? s : "") == 0; }
+    bool operator!=(const char* s) const { return !(*this == s); }
+    String& operator+=(const char* s) { strncat(_buf, s, sizeof(_buf) - strlen(_buf) - 1); return *this; }
+};
